@@ -14,7 +14,8 @@ create table if not exists public.prechecks (
   motivos           jsonb not null default '[]'::jsonb,
   shipment_owner    text,
   dispatcher        text,
-  solicitado_por    text
+  solicitado_por    text,
+  politica_version  text                        -- p. ej. BCA Verification Policy v1.0
 );
 create index if not exists prechecks_created_at_idx on public.prechecks (created_at desc);
 
@@ -25,3 +26,6 @@ alter table public.prechecks add column if not exists dispatcher     text;
 
 -- Solo la app (con la service_role key guardada en los secrets) puede leer y escribir.
 alter table public.prechecks enable row level security;
+
+-- 2.3.0: versión de la política aplicada en cada verificación (por ejemplo "BCA Verification Policy v1.0").
+alter table public.prechecks add column if not exists politica_version text;
