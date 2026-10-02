@@ -6,6 +6,7 @@ Historial de versiones y entradas de la bitácora. La guía de uso y el diagnós
 
 | Versión | Fecha | Cambios | Entradas |
 |---|---|---|---|
+| 2.3.0 | 2026-10-02 | Corrige la regla de BCA previa: con MC activo se busca el MC# en la BCA, no el DOT#. Mensajes de BCA previa más claros, con enlace al archivo. Política de BCA publicada en la app con versión, fecha e historial. Cada verificación guarda la versión de política aplicada. | B-014, B-019, B-020 |
 | 2.2.0 | 2026-10-02 | Toda la app en inglés de EE. UU. con fechas en hora de Guatemala. Banda de cumplimiento de políticas (verde, amarillo y rojo). Shipment Owner, Dispatcher y "Requested by" leídos del CRM. Nuevas columnas en Supabase. | B-016, B-017, B-018 |
 | 2.1.0 | 2026-10-02 | Diseño 100 % responsivo (teléfono, tablet, computadora y TV). Pestañas renombradas: Verificar BCA, Validar código, Consulta USDOT. Versión visible en el pie de página. Se crea esta bitácora. | B-012, B-013, B-015 |
 | 2.0.1 | 2026-10-02 | Corrige la comparación de direcciones con formato `CIUDAD, ST ZIP`. El campo de nombre pasa a "Broker o dispatcher que pide la BCA". | B-010, B-011 |
@@ -14,6 +15,36 @@ Historial de versiones y entradas de la bitácora. La guía de uso y el diagnós
 | 1.0.0 | 2026-09-30 | Validador de USDOT contra MOTUS (uno o varios DOT). | B-001 a B-005 |
 
 ## Entradas
+
+### B-020 · Políticas publicadas en la app con control de versiones
+- **Fecha:** 2026-10-02
+- **Tipo:** Decisión
+- **Estado:** Vigente
+- **Versión:** 2.3.0
+- **Síntoma:** Los brokers y dispatchers necesitan tener a mano el documento que respalda cada regla, y saber que es la versión más reciente.
+- **Causa:** Pedido de BackOffice.
+- **Solución:**
+  - El PDF de la política vive en `static/policies/` y Streamlit lo publica en `/app/static/...` (opción `enableStaticServing` en `.streamlit/config.toml`).
+  - `politicas.json` es el catálogo: título, dueño y la lista de versiones (la primera es la vigente) con fecha y qué cambió.
+  - La app muestra arriba del formulario "BCA Verification Policy, version 1.0, updated October 2, 2026" con el botón **Open policy (PDF)**, más el historial de versiones. También enlaza la política desde la banda de cumplimiento y desde "To send this request".
+  - Cada verificación guarda en Supabase la versión de política aplicada (`politica_version`), y "Validate code" la muestra. Así, si cambia la política, se sabe con qué reglas se aprobó cada solicitud.
+  - Versión 1.0 = el documento "Verifying Information Before Sending a BCA" que entregó Sofía, publicado como `BCA_Verification_Policy_v1.0_2026-10-02.pdf`.
+- **Cómo verificar:** El botón Open policy (PDF) abre el documento en una pestaña nueva.
+
+### B-019 · BCA previa marcada como desactualizada porque no tenía el DOT
+- **Fecha:** 2026-10-02
+- **Tipo:** Falla
+- **Estado:** Resuelto
+- **Versión:** 2.3.0
+- **Síntoma:** En S-039981 (GOREMOTE TRANSPORT LLC) la app dijo "Previous BCA is out of date. BCA_Signature_39941__75188.pdf does not match MOTUS (DOT). A new BCA is needed." La BCA era válida.
+- **Causa:** La app exigía que la BCA tuviera el DOT#. Pero la plantilla de BCA lleva el **MC#** cuando el carrier tiene MC, y solo lleva el DOT# cuando el carrier no tiene MC o el MC está INACTIVE en MOTUS. Además, el mensaje "(DOT)" no explicaba qué faltaba.
+- **Solución:** En `stt_core.revisar_bca_previa`:
+  - Con MC activo, se busca el MC# en la BCA y el DOT no es obligatorio.
+  - Sin MC o con MC INACTIVE, se busca el DOT#.
+  - El número tiene que aparecer completo (MC-1732074, MC 1732074 o MC1732074); un número más largo que lo contenga no cuenta.
+  - El mensaje ahora detalla cada punto revisado (por ejemplo "Legal name: found. MC 1732074: found. Address: found. Signature: found.") y trae un enlace para abrir la BCA.
+  - **Pendiente de confirmar con Sofía:** si el carrier hoy tiene MC activo pero la BCA archivada solo tiene el DOT (se hizo cuando no tenía MC), la app pide una BCA nueva.
+- **Cómo verificar:** S-039981 debe dar "Do not send: BCA on file" si la BCA de GOREMOTE tiene el MC, el nombre legal y la dirección actuales.
 
 ### B-018 · App en inglés y fechas en hora de Guatemala
 - **Fecha:** 2026-10-02
@@ -65,9 +96,13 @@ Historial de versiones y entradas de la bitácora. La guía de uso y el diagnós
   ├── stt_core.py
   ├── requirements.txt
   ├── supabase.sql
+  ├── politicas.json
   ├── assets/
   │   ├── stt_logo.png
   │   └── stt_icon.png
+  ├── static/
+  │   └── policies/
+  │       └── BCA_Verification_Policy_v1.0_2026-10-02.pdf
   ├── .streamlit/
   │   └── config.toml
   └── bitacora/
@@ -80,11 +115,12 @@ Historial de versiones y entradas de la bitácora. La guía de uso y el diagnós
 ### B-014 · Lectura de BCAs previas sin probar contra el CRM real
 - **Fecha:** 2026-10-02
 - **Tipo:** Hallazgo
-- **Estado:** Pendiente
+- **Estado:** Resuelto
 - **Versión:** 2.0.0
 - **Síntoma:** La lista de archivos del Carrier y el contenido de los PDF de BCA se probaron solo con copias guardadas de las páginas y con PDFs de prueba, no contra el CRM en vivo.
 - **Causa:** Desde el entorno de desarrollo no hay acceso al CRM.
 - **Solución:** Pendiente de confirmar con un Shipment cuyo Carrier tenga una BCA firmada, por ejemplo S-039245 (VELARDE TRUCKING LLC, archivo `BCA_Signature_22244__21404.pdf`). Si el PDF es una imagen escaneada, la app no puede leerlo y lo marca en amarillo para revisión manual; eso es lo esperado.
+- **Confirmado:** El 2026-10-02, con S-039981, la app leyó en vivo la lista de archivos del Carrier y el texto de `BCA_Signature_39941__75188.pdf`. Ese mismo caso llevó a corregir la regla en B-019.
 - **Cómo verificar:** Verificar S-039245. El grupo "BCA existente" debe decir "Ya existe una BCA vigente", "BCA previa desactualizada" o "BCA previa sin poder leer". Si dice "No se pudo leer la sección de archivos del Carrier", hay que revisar la consulta interna (B-006).
 
 ### B-013 · Las pestañas pueden desplazarse en teléfonos si no carga Google Fonts
