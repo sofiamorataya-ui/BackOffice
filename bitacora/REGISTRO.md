@@ -6,6 +6,7 @@ Historial de versiones y entradas de la bitácora. La guía de uso y el diagnós
 
 | Versión | Fecha | Cambios | Entradas |
 |---|---|---|---|
+| 2.2.0 | 2026-10-02 | Toda la app en inglés de EE. UU. con fechas en hora de Guatemala. Banda de cumplimiento de políticas (verde, amarillo y rojo). Shipment Owner, Dispatcher y "Requested by" leídos del CRM. Nuevas columnas en Supabase. | B-016, B-017, B-018 |
 | 2.1.0 | 2026-10-02 | Diseño 100 % responsivo (teléfono, tablet, computadora y TV). Pestañas renombradas: Verificar BCA, Validar código, Consulta USDOT. Versión visible en el pie de página. Se crea esta bitácora. | B-012, B-013, B-015 |
 | 2.0.1 | 2026-10-02 | Corrige la comparación de direcciones con formato `CIUDAD, ST ZIP`. El campo de nombre pasa a "Broker o dispatcher que pide la BCA". | B-010, B-011 |
 | 2.0.0 | 2026-10-02 | Pre-verificación de BCA con las reglas de BackOffice, diseño con la imagen de STT, código de pre-verificación, registro en Supabase y estadísticas. | B-008, B-009 |
@@ -13,6 +14,42 @@ Historial de versiones y entradas de la bitácora. La guía de uso y el diagnós
 | 1.0.0 | 2026-09-30 | Validador de USDOT contra MOTUS (uno o varios DOT). | B-001 a B-005 |
 
 ## Entradas
+
+### B-018 · App en inglés y fechas en hora de Guatemala
+- **Fecha:** 2026-10-02
+- **Tipo:** Decisión
+- **Estado:** Vigente
+- **Versión:** 2.2.0
+- **Síntoma:** La app la usan brokers y dispatchers que trabajan en inglés.
+- **Causa:** Pedido de BackOffice.
+- **Solución:** Todo lo visible está en inglés de EE. UU. (pestañas: Verify BCA, Validate code, USDOT lookup). Las fechas se muestran como `Oct 2, 2026, 3:22 PM (Guatemala time)` con la zona `America/Guatemala` (UTC−6, sin horario de verano), sin importar dónde esté el servidor o el usuario. El código interno y la bitácora siguen en español. Los motivos guardados en Supabase antes de esta versión quedaron en español; desde la 2.2.0 se guardan en inglés.
+- **Cómo verificar:** El pie de página dice "Version 2.2.0" y la hora de "Verified" coincide con la hora de Guatemala.
+
+### B-017 · Banda de cumplimiento de políticas
+- **Fecha:** 2026-10-02
+- **Tipo:** Decisión
+- **Estado:** Vigente
+- **Versión:** 2.2.0
+- **Síntoma:** BackOffice quiere que la app le hable directamente a quien pide el documento, con un mensaje según qué tanto cumple.
+- **Causa:** Pedido de Sofía para presentar a gerencia.
+- **Solución:** Entre el veredicto y los datos del Shipment aparece una banda. Se calcula en `stt_core.nivel_cumplimiento`, que es genérica y sirve para cualquier documento futuro:
+  - **Verde (Fully compliant):** cumple todos los requisitos. Agradece por seguir las políticas.
+  - **Amarillo (Partially compliant):** cumple más del 25 % pero no todo. Explica que faltan datos según las políticas y SOPs.
+  - **Rojo (Not compliant):** cumple el 25 % o menos. Recuerda que los requisitos son obligatorios y que las solicitudes incompletas se devuelven y retrasan la carga.
+  - Los requisitos que no se pudieron revisar porque faltaba algo antes (por ejemplo, sin driver asignado) cuentan como no cumplidos. Para la BCA la base es 11 requisitos sin MC y 13 con MC.
+  - Que ya exista una BCA vigente no cuenta en contra del broker: la banda queda verde y le agradece por verificar antes de pedir.
+  - El umbral del rojo está en `UMBRAL_ROJO` (0.25) dentro de `stt_core.py`.
+- **Cómo verificar:** Un Shipment sin driver asignado debe salir en rojo; uno con 1 a 3 datos faltantes, en amarillo.
+
+### B-016 · Quién pide la solicitud: Shipment Owner y Dispatcher
+- **Fecha:** 2026-10-02
+- **Tipo:** Decisión
+- **Estado:** Vigente
+- **Versión:** 2.2.0
+- **Síntoma:** BackOffice necesita ver quién pidió el documento. En el CRM, el que pide suele ser el Shipment Owner o el Dispatcher, y muy de vez en cuando otra persona con acceso.
+- **Causa:** En la página del Shipment, los campos son `OrderOwner` (Shipment Owner) y `DispatcherId` (Dispatcher Id). El Dispatcher Id a menudo está vacío.
+- **Solución:** La app lee los dos campos y los muestra. El campo "Requested by (optional)" solo se llena cuando el que pide no es ninguno de los dos. "Requested by" se registra así: el nombre escrito a mano; si no hay, el Shipment Owner; si tampoco, el Dispatcher. La banda de políticas saluda a quien escribió su nombre o, si no, al Owner y al Dispatcher. Se agregaron las columnas `shipment_owner`, `dispatcher` y `cumplimiento` a `supabase.sql`.
+- **Cómo verificar:** Con S-039981, "Shipment Owner" debe decir Carlos Zavala. Si la tabla de Supabase ya existía, hay que volver a correr `supabase.sql` para agregar las columnas nuevas; si no, aparece "The verification could not be saved to the log".
 
 ### B-015 · Estructura de archivos del repo
 - **Fecha:** 2026-10-02
