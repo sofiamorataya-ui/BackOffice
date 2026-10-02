@@ -1,5 +1,6 @@
-[README (1).md](https://github.com/user-attachments/files/32980344/README.1.md)
 # Bitácora de la app BackOffice de STT
+
+La app está en inglés para los brokers y dispatchers; esta bitácora queda en español para el equipo que la mantiene. Los mensajes de error se citan en inglés, tal como aparecen en la app.
 
 Aquí queda documentado todo lo que falló, lo que descubrimos y cómo se resolvió. La idea es que, cuando algo no funcione, se pueda descartar rápido lo que ya sabemos, sin investigar desde cero ni suponer.
 
@@ -21,17 +22,20 @@ La bitácora tiene dos archivos:
 | `ModuleNotFoundError` al abrir la app | Que exista `requirements.txt` en minúscula, en la raíz del repo, con todas las librerías. En los logs debe aparecer la instalación de cada una. | B-007 |
 | Botones y pestañas sin los colores de STT | Que `config.toml` esté dentro de la carpeta `.streamlit` (con punto). | B-015 |
 | No aparece el logo o sale error con `stt_logo.png` | Que `stt_logo.png` y `stt_icon.png` estén dentro de la carpeta `assets`. | B-015 |
-| "Faltan STT_EMAIL y STT_PASSWORD en los secrets" | Secrets de la app en Streamlit Cloud. | B-009 |
-| "El CRM rechazó el usuario o la contraseña" | Si cambió la contraseña de la cuenta, actualizá el secret. Probá entrar manualmente al CRM con esa cuenta. | B-009 |
-| "No encontré el formulario de inicio de sesión del CRM" | El CRM cambió su pantalla de login. Guardá el HTML de `sttcrm.com/login` y revisalo. | B-006 |
-| "No existe el Shipment S-xxxxxx en el CRM" | Abrí `sttcrm.com/Admin/Shipments/Details/<número>` en el navegador. El número va sin "S-" ni ceros a la izquierda. | B-006 |
-| Todos los DOT salen "no existe en MOTUS" o error de conexión | Abrí `https://motus.dot.gov/api/carriers/3692487` en el navegador. Si no devuelve texto con `"entityId"`, MOTUS cambió su servicio. | B-003 |
+| "STT_EMAIL and STT_PASSWORD are missing from the secrets" | Secrets de la app en Streamlit Cloud. | B-009 |
+| "The CRM rejected the username or password" | Si cambió la contraseña de la cuenta, actualizá el secret. Probá entrar manualmente al CRM con esa cuenta. | B-009 |
+| "The CRM sign-in form was not found" | El CRM cambió su pantalla de login. Guardá el HTML de `sttcrm.com/login` y revisalo. | B-006 |
+| "Shipment S-xxxxxx does not exist in the CRM" | Abrí `sttcrm.com/Admin/Shipments/Details/<número>` en el navegador. El número va sin "S-" ni ceros a la izquierda. | B-006 |
+| Todos los DOT salen "does not exist in MOTUS" o "Could not connect" | Abrí `https://motus.dot.gov/api/carriers/3692487` en el navegador. Si no devuelve texto con `"entityId"`, MOTUS cambió su servicio. | B-003 |
 | La dirección sale en rojo pero se ve igual | Compará letra por letra: abreviaturas (LANE/LN, AVE/AVENUE), APT/STE, ZIP. Si de verdad son idénticas, es un formato del CRM que la app no reconoce. | B-010 |
 | La app compara contra el P O BOX y no contra la dirección física | Identificadores de tipo de dirección de MOTUS. | B-005 |
-| "No se pudo leer la sección de archivos del Carrier" | La consulta interna `CarrierManagementPictureList` del CRM. Guardá un HAR del Carrier y revisalo. | B-006, B-014 |
-| "BCA previa sin poder leer" | Normal si el PDF es una imagen escaneada. BackOffice la revisa a mano. | B-014 |
-| "Validar código" dice que el registro no está configurado | Secrets `SUPABASE_URL` y `SUPABASE_KEY`, y que la tabla exista (`supabase.sql`). | B-009 |
-| "No se pudo guardar la verificación en el registro" | Que la key sea la **service_role** y que se haya corrido `supabase.sql`. | B-009 |
+| "The carrier's files section could not be read" | La consulta interna `CarrierManagementPictureList` del CRM. Guardá un HAR del Carrier y revisalo. | B-006, B-014 |
+| "Previous BCA could not be read" | Normal si el PDF es una imagen escaneada. BackOffice la revisa a mano. | B-014 |
+| "Validate code" dice "The code log is not set up" | Secrets `SUPABASE_URL` y `SUPABASE_KEY`, y que la tabla exista (`supabase.sql`). | B-009 |
+| "The verification could not be saved to the log" | Que la key sea la **service_role** y que se haya corrido la versión más reciente de `supabase.sql` (la 2.2.0 agregó columnas). | B-009, B-016 |
+| "Requested by" dice "Not identified" | En el CRM el Shipment no tiene Shipment Owner ni Dispatcher Id. El broker puede escribir su nombre en "Requested by (optional)". | B-016 |
+| La banda sale en un color que no corresponde | Revisar `UMBRAL_ROJO` y `REQUISITOS_BCA` en `stt_core.py`. | B-017 |
+| La hora no coincide con Guatemala | La app usa `America/Guatemala`. Revisar `ZONA` en `app.py`. | B-018 |
 | Las pestañas se cortan en un teléfono | Google Fonts no cargó; la app usa la letra del sistema, que es más ancha. | B-013 |
 | Errores 401 en DevTools al abrir MOTUS | Normal: son datos privados de MOTUS. No afectan a la app. | B-004 |
 
