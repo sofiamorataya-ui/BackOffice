@@ -7,3 +7,6 @@ textColor = "#000000"
 
 [client]
 toolbarMode = "minimal"
+
+[server]
+enableStaticServing = true
