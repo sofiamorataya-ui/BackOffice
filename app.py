@@ -14,6 +14,7 @@ import streamlit as st
 import stt_core as core
 
 RAIZ = Path(__file__).parent
+VERSION = "2.1.0"  # Cambiala en cada entrega y anotala en bitacora/REGISTRO.md
 ZONA = ZoneInfo("America/Guatemala")
 
 st.set_page_config(page_title="STT BackOffice", page_icon=str(RAIZ / "assets" / "stt_icon.png"),
@@ -34,8 +35,8 @@ CSS = """
   font-family:'Barlow',system-ui,sans-serif}
 header[data-testid="stHeader"]{background:transparent}
 .block-container{padding-top:1.2rem;max-width:1240px}
-.stTabs [data-baseweb="tab"] p{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:19px}
-.stTabs [data-baseweb="tab-list"]{gap:28px;border-bottom:1px solid var(--rule)}
+.stTabs [role="tab"] p{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:19px}
+.stTabs [role="tablist"]{gap:28px;border-bottom:1px solid var(--rule)}
 div[data-testid="stForm"]{border:1px solid var(--rule);border-radius:4px;background:var(--road);padding:18px 20px 6px}
 .stButton button, div[data-testid="stFormSubmitButton"] button{border-radius:3px;font-weight:700;font-size:16px;min-height:44px}
 
@@ -75,7 +76,7 @@ div[data-testid="stForm"]{border:1px solid var(--rule);border-radius:4px;backgro
 .fact{padding:12px 18px;border-left:1px solid var(--rule)}
 .fact:first-child{border-left:0}
 .fact span{display:block;font-size:14px;color:var(--muted)}
-.fact b{font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:21px;line-height:1.15;word-break:break-word}
+.fact b{font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:21px;line-height:1.15;overflow-wrap:break-word}
 
 /* Acciones para poder enviar */
 .acciones{border-left:5px solid var(--red);background:var(--red-wash);padding:16px 22px 8px;margin-top:22px}
@@ -94,7 +95,7 @@ div[data-testid="stForm"]{border:1px solid var(--rule);border-radius:4px;backgro
 .mark--ok{background:var(--go)} .mark--fail{background:var(--red)} .mark--warn{background:var(--caution)} .mark--info{background:#8A9099}
 .chk-t{font-weight:600;font-size:16.5px}
 .chk--fail .chk-t{color:var(--red)}
-.chk-d{color:var(--muted);font-size:15px;margin-top:1px;word-break:break-word}
+.chk-d{color:var(--muted);font-size:15px;margin-top:1px;overflow-wrap:break-word}
 .chk-note{margin-top:7px;padding:7px 12px;background:var(--caution-wash);border-left:3px solid var(--caution);font-size:15px}
 .chk-note a{color:var(--caution);font-weight:700;margin-left:6px}
 
@@ -125,15 +126,59 @@ div[data-testid="stForm"]{border:1px solid var(--rule);border-radius:4px;backgro
 .ticket dl{display:grid;grid-template-columns:170px 1fr;margin:0;padding:12px 20px;gap:8px 12px;font-size:16px}
 .ticket dt{color:var(--muted)}
 .ticket dd{margin:0;font-weight:600}
+
+.pie{margin-top:48px;padding-top:12px;border-top:1px solid var(--rule);color:var(--muted);font-size:13.5px}
 h2.sec{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:26px;margin:30px 0 4px;padding:0}
 
-@media (max-width:900px){.facts{grid-template-columns:1fr 1fr}.fact{border-left:0;border-top:1px solid var(--rule)}}
-@media (max-width:640px){
-  .verdict{grid-template-columns:1fr;padding:22px 20px}
-  .v-code{min-width:0}
-  .stt-top{gap:14px}.stt-top img{height:40px}.stt-top .t1{font-size:24px}
-  .bar{grid-template-columns:1fr 44px}.bar div{grid-column:1/-1;order:3}
+/* ---------- Responsivo ---------- */
+.fact,.chk>div,.cmp-pair>div,.ticket dd,.acciones li{min-width:0;overflow-wrap:break-word}
+.verdict>div{min-width:0}
+
+/* Tablets y laptops pequeñas: el checklist y la comparación se apilan, comparación primero */
+@media (max-width:1024px){
+  div[data-testid="stHorizontalBlock"]:has(.cmp){flex-wrap:wrap;gap:0}
+  div[data-testid="stHorizontalBlock"]:has(.cmp)>div[data-testid="stColumn"]{flex:1 1 100% !important;width:100% !important;min-width:100%}
+  div[data-testid="stHorizontalBlock"]:has(.cmp)>div[data-testid="stColumn"]:has(.cmp){order:-1}
+  .cmp-pair{grid-template-columns:70px 1fr}
 }
+@media (max-width:900px){.facts{grid-template-columns:1fr 1fr}.fact{border-left:0;border-top:1px solid var(--rule)}
+  .fact:nth-child(-n+2){border-top:0}.fact:nth-child(even){border-left:1px solid var(--rule)}}
+
+/* Teléfonos */
+@media (max-width:640px){
+  .block-container{padding-left:16px;padding-right:16px}
+  .verdict{grid-template-columns:1fr;gap:18px;padding:22px 20px}
+  .v-stamp{font-size:clamp(32px,10vw,44px);gap:12px}
+  .v-sub{font-size:16.5px}
+  .v-code{min-width:0}
+  .v-code b{font-size:30px}
+  .bar{grid-template-columns:1fr 44px}.bar div{grid-column:1/-1;order:3}
+  .stTabs [role="tablist"]{gap:14px}
+  .stTabs [role="tab"] p{font-size:16px}
+  .acciones{padding:14px 16px 6px}
+  .acciones a{white-space:normal;margin-left:5px}
+  .kpi b{font-size:38px}
+}
+@media (max-width:480px){
+  .stt-top{flex-direction:column;align-items:flex-start;gap:8px}
+  .stt-top img{height:42px}.stt-top .t1{font-size:26px}.stt-top .t2{font-size:14.5px}
+  .facts{grid-template-columns:1fr}
+  .fact,.fact:nth-child(even){border-left:0}
+  .fact:nth-child(2){border-top:1px solid var(--rule)}
+  .ticket dl{grid-template-columns:1fr;gap:2px}
+  .ticket dd{margin-bottom:8px}
+  .stTabs [role="tablist"]{gap:14px}
+  .stTabs [role="tab"] p{font-size:16px}
+}
+
+@media (max-width:360px){
+  .stTabs [role="tablist"]{gap:10px}
+  .stTabs [role="tab"] p{font-size:15px}
+}
+/* Pantallas grandes y TV: se agranda todo de forma proporcional */
+@media (min-width:1800px){.block-container{zoom:1.2}}
+@media (min-width:2300px){.block-container{zoom:1.55}}
+@media (min-width:3000px){.block-container{zoom:2}}
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -306,7 +351,7 @@ def guardar_en_registro(r: core.ResultadoBCA, codigo: str | None, quien: str) ->
 # ============================================================
 # Pestañas
 # ============================================================
-tab_bca, tab_bo, tab_dot = st.tabs(["Pre-verificación BCA", "Verificar código", "Consulta USDOT"])
+tab_bca, tab_bo, tab_dot = st.tabs(["Verificar BCA", "Validar código", "Consulta USDOT"])
 
 # ---------------- Pre-verificación BCA ----------------
 with tab_bca:
@@ -376,7 +421,7 @@ with tab_bo:
     with st.form("form_codigo", border=True):
         c1, c2 = st.columns([3, 1.2], vertical_alignment="bottom")
         codigo_in = c1.text_input("Código de pre-verificación", placeholder="BCA-39981-K7QM")
-        buscar = c2.form_submit_button("Verificar código", type="primary", use_container_width=True)
+        buscar = c2.form_submit_button("Validar código", type="primary", use_container_width=True)
 
     if buscar:
         cod = codigo_in.strip().upper()
@@ -475,3 +520,5 @@ with tab_dot:
                         "Motor Carrier of Property": a["estado"] if a else "Sin autoridad",
                     })
             st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
+
+st.markdown(f'<div class="pie">STT Logistics Group, BackOffice. Versión {VERSION}</div>', unsafe_allow_html=True)
