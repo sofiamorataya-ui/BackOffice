@@ -3,6 +3,7 @@
 Todo lo visible está en inglés de EE. UU. Las fechas y horas se muestran en hora de Guatemala.
 """
 import base64
+import json
 import html
 import re
 from collections import Counter
@@ -17,7 +18,7 @@ import streamlit as st
 import stt_core as core
 
 RAIZ = Path(__file__).parent
-VERSION = "2.2.0"  # Cambiala en cada entrega y anotala en bitacora/REGISTRO.md
+VERSION = "2.3.0"  # Cambiala en cada entrega y anotala en bitacora/REGISTRO.md
 ZONA = ZoneInfo("America/Guatemala")
 
 st.set_page_config(page_title="STT BackOffice", page_icon=str(RAIZ / "assets" / "stt_icon.png"),
@@ -153,6 +154,26 @@ h2.sec{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:26px;
 .facts--people{grid-template-columns:1fr 1fr 1.3fr 1.3fr}
 .facts--people .fact b{font-size:19px}
 
+/* Política vigente: barra fija arriba del formulario */
+.pol{display:flex;align-items:center;gap:16px;padding:14px 18px;margin:4px 0 14px;border:1px solid var(--rule);border-left:5px solid var(--ink);background:#fff}
+.pol-doc{flex:0 0 auto;width:30px;height:38px;background:linear-gradient(var(--red) 0 7px,#fff 7px);border:2px solid var(--ink);
+  clip-path:polygon(0 0,70% 0,100% 24%,100% 100%,0 100%)}
+.pol-txt{flex:1 1 auto;min-width:0}
+.pol-txt b{display:block;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:21px;line-height:1.1}
+.pol-txt span{display:block;font-size:15px;color:var(--muted);margin-top:2px}
+a.pol-btn{flex:0 0 auto;display:inline-block;padding:10px 16px;background:var(--ink);color:#fff !important;text-decoration:none;
+  font-weight:700;font-size:15px;border-radius:3px;white-space:nowrap}
+a.pol-btn:hover,a.pol-btn:focus-visible{background:var(--red)}
+.policy p a,.acciones .pol-ref a{color:inherit;font-weight:700}
+.acciones .pol-ref{margin:4px 0 10px;font-size:15px;color:var(--muted)}
+.acciones .pol-ref a{margin-left:0;white-space:normal}
+.chk-d a{color:var(--red);font-weight:600;margin-left:6px;white-space:nowrap}
+.hist{width:100%;border-collapse:collapse;font-size:15px}
+.hist th{text-align:left;font-weight:600;color:var(--muted);border-bottom:2px solid var(--ink);padding:6px 10px 6px 0}
+.hist td{border-bottom:1px solid var(--rule);padding:8px 10px 8px 0;vertical-align:top}
+.hist a{color:var(--red);font-weight:600}
+@media (max-width:640px){.pol{flex-wrap:wrap}.pol-txt{flex-basis:calc(100% - 50px)}a.pol-btn{width:100%;text-align:center}}
+
 /* ---------- Responsivo ---------- */
 .fact,.chk>div,.cmp-pair>div,.ticket dd,.acciones li{min-width:0;overflow-wrap:break-word}
 .verdict>div{min-width:0}
@@ -242,6 +263,24 @@ def motus(dot: str):
 def numero_shipment(texto: str) -> int | None:
     d = core.digitos(texto)
     return int(d) if d else None
+
+
+@st.cache_data(show_spinner=False)
+def catalogo_politicas() -> dict:
+    return json.loads((RAIZ / "politicas.json").read_text(encoding="utf-8"))
+
+
+def fecha_larga(iso: str) -> str:
+    d = datetime.strptime(iso, "%Y-%m-%d")
+    return f"{d:%B} {d.day}, {d.year}"
+
+
+def politica(clave: str) -> dict:
+    """Versión vigente de una política (la primera de la lista), con su URL pública."""
+    p = catalogo_politicas()[clave]
+    v = p["versions"][0]
+    return {**p, **v, "url": f"./app/static/{v['file']}", "fecha": fecha_larga(v["effective"]),
+            "etiqueta": f"{p['title']} v{v['version']}"}
 
 
 def plural(n: int, singular: str, plural_: str | None = None) -> str:
@@ -339,11 +378,18 @@ def html_politicas(r: core.ResultadoBCA, gente: dict) -> str:
                  "delays the load for you, your customer, and the carrier. Please complete the items below before "
                  "submitting. If anything is unclear, BackOffice is glad to help.")
 
+    pol = politica("BCA")
+    if nivel == "green":
+        enlace_politica = (f'You can review the <a href="{pol["url"]}" target="_blank">{e(pol["title"])}</a> '
+                           f'(updated {pol["fecha"]}) at any time.')
+    else:
+        enlace_politica = (f'Every requirement comes from the <a href="{pol["url"]}" target="_blank">'
+                           f'{e(pol["title"])}</a>, updated {pol["fecha"]}.')
     pct = round(100 * cumplidos / total) if total else 0
     return (f'<div class="policy policy--{nivel}"><div class="policy-h"><b>{titulo}</b>'
             f'<span>{cumplidos} of {total} requirements met</span>'
             f'<div class="meter" role="img" aria-label="{pct}% of requirements met"><i style="width:{pct}%"></i></div></div>'
-            f'<p>{texto}</p></div>')
+            f'<p>{texto} {enlace_politica}</p></div>')
 
 
 def html_datos(r: core.ResultadoBCA, gente: dict, cuando: str) -> str:
@@ -380,7 +426,10 @@ def html_acciones(r: core.ResultadoBCA) -> str:
         link = f'<a href="{e(c.link)}" target="_blank">{e(c.link_texto)}</a>' if c.link else ""
         items.append(f"<li>{e(c.solucion or c.detalle)}{link}</li>")
     titulo = "What to do" if r.veredicto == "YA_EXISTE" else "To send this request"
-    return f'<div class="acciones"><h3>{titulo}</h3><ol>{"".join(items)}</ol></div>'
+    pol = politica("BCA")
+    ref = (f'<div class="pol-ref">Based on the <a href="{pol["url"]}" target="_blank">{e(pol["title"])}</a>, '
+           f'version {e(pol["version"])}, updated {pol["fecha"]}.</div>')
+    return f'<div class="acciones"><h3>{titulo}</h3>{ref}<ol>{"".join(items)}</ol></div>'
 
 
 MARCAS = {"ok": "✓", "fail": "✕", "warn": "!", "info": "–"}
@@ -400,9 +449,12 @@ def html_checklist(r: core.ResultadoBCA) -> str:
             if c.estado == "warn" and c.solucion:
                 link = f'<a href="{e(c.link)}" target="_blank">{e(c.link_texto)}</a>' if c.link else ""
                 nota = f'<div class="chk-note">{e(c.solucion)}{link}</div>'
+            enlace = ""
+            if c.estado in ("ok", "info") and c.link:
+                enlace = f' <a href="{e(c.link)}" target="_blank">{e(c.link_texto)}</a>'
             filas.append(
                 f'<div class="chk chk--{c.estado}"><div class="mark mark--{c.estado}">{MARCAS[c.estado]}</div>'
-                f'<div><div class="chk-t">{e(c.titulo)}</div><div class="chk-d">{e(c.detalle)}</div>{nota}</div></div>')
+                f'<div><div class="chk-t">{e(c.titulo)}</div><div class="chk-d">{e(c.detalle)}{enlace}</div>{nota}</div></div>')
         resumen = f"{bien} of {len(evaluados)}" if evaluados else ""
         partes.append(f'<div class="grp"><div class="grp-h"><b>{e(g)}</b><span>{resumen}</span></div>{"".join(filas)}</div>')
     return "".join(partes)
@@ -449,6 +501,7 @@ def guardar_en_registro(r: core.ResultadoBCA, codigo: str | None, gente: dict) -
             "cumplimiento": r.cumplimiento[0],
             "codigo": codigo,
             "motivos": [c.titulo for c in r.fallas],
+            "politica_version": politica("BCA")["etiqueta"],
             "shipment_owner": gente["owner"] or None,
             "dispatcher": gente["dispatcher"] or None,
             "solicitado_por": gente["solicitante"] or None,
@@ -465,6 +518,21 @@ tab_bca, tab_bo, tab_dot = st.tabs(["Verify BCA", "Validate code", "USDOT lookup
 
 # ---------------- Verify BCA ----------------
 with tab_bca:
+    pol = politica("BCA")
+    st.markdown(
+        '<div class="pol"><div class="pol-doc" aria-hidden="true"></div>'
+        f'<div class="pol-txt"><b>{e(pol["title"])}</b>'
+        f'<span>Version {e(pol["version"])}, updated {pol["fecha"]}. This is the policy the app applies to every BCA request.</span></div>'
+        f'<a class="pol-btn" href="{pol["url"]}" target="_blank">Open policy (PDF)</a></div>',
+        unsafe_allow_html=True)
+    with st.expander("Policy revision history"):
+        filas_hist = "".join(
+            f'<tr><td>{e(v["version"])}</td><td>{fecha_larga(v["effective"])}</td><td>{e(v["changes"])}</td>'
+            f'<td><a href="./app/static/{e(v["file"])}" target="_blank">PDF</a></td></tr>'
+            for v in catalogo_politicas()["BCA"]["versions"])
+        st.markdown('<table class="hist"><thead><tr><th>Version</th><th>Effective</th><th>What changed</th>'
+                    f'<th>File</th></tr></thead><tbody>{filas_hist}</tbody></table>', unsafe_allow_html=True)
+        st.caption("The first row is the current version. Earlier versions stay available for reference.")
     with st.form("form_bca", border=True):
         c1, c2, c3 = st.columns([2, 2, 1.2], vertical_alignment="bottom")
         texto_ship = c1.text_input("Shipment", placeholder="S-039981")
@@ -567,6 +635,7 @@ with tab_bo:
                         f'<dt>Dispatcher</dt><dd>{e(fila.get("dispatcher") or "Not set")}</dd>'
                         f'<dt>Requested by</dt><dd>{e(fila.get("solicitado_por") or "Not identified")}</dd>'
                         f'<dt>Verified</dt><dd>{e(cuando)} (Guatemala time)</dd>'
+                        f'<dt>Policy applied</dt><dd>{e(fila.get("politica_version") or "Not recorded")}</dd>'
                         '</dl></div>',
                         unsafe_allow_html=True)
                     st.caption("The code confirms everything was in order at the time of verification. "
