@@ -9,11 +9,19 @@ create table if not exists public.prechecks (
   dot               text,
   mc                text,
   resultado         text not null,              -- AUTORIZADO | NO_ENVIAR | YA_EXISTE
+  cumplimiento      text,                       -- green | yellow | red
   codigo            text unique,                -- solo cuando es AUTORIZADO
   motivos           jsonb not null default '[]'::jsonb,
+  shipment_owner    text,
+  dispatcher        text,
   solicitado_por    text
 );
 create index if not exists prechecks_created_at_idx on public.prechecks (created_at desc);
+
+-- Si la tabla ya existía de la versión 2.0, estas líneas agregan las columnas nuevas (2.2.0).
+alter table public.prechecks add column if not exists cumplimiento   text;
+alter table public.prechecks add column if not exists shipment_owner text;
+alter table public.prechecks add column if not exists dispatcher     text;
 
 -- Solo la app (con la service_role key guardada en los secrets) puede leer y escribir.
 alter table public.prechecks enable row level security;
