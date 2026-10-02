@@ -423,55 +423,69 @@ def _link_carrier(cid):
     return f"{CRM_URL}/Admin/Carrier/Details/{cid}"
 
 
-def revisar_bca_previa(archivos, leer_pdf, carrier, motus) -> tuple[Check, dict | None]:
-    """Busca BCAs en los archivos del Carrier y decide si alguna sigue vigente frente a MOTUS."""
+def _numero_en_texto(numero: str, texto: str) -> bool:
+    """True si el número aparece completo en el texto (MC-1732074, MC 1732074, USDOT: 4409578…)."""
+    if not numero:
+        return False
+    return bool(re.search(rf"(?<!\d){numero}(?!\d)", re.sub(r"[\s\-]", "", texto)))
+
+
+def revisar_bca_previa(archivos, leer_pdf, carrier, motus, mc_activo: bool) -> tuple[Check, dict | None]:
+    """Busca BCAs en los archivos del Carrier y decide si alguna sigue vigente frente a MOTUS.
+
+    Regla de BackOffice para el número que debe tener la BCA (ver bitácora B-019):
+    - Carrier con MC activo en MOTUS: la plantilla de BCA lleva el MC#. El DOT puede no aparecer.
+    - Carrier sin MC, o con el MC INACTIVE en MOTUS: la BCA lleva el DOT#.
+    """
     candidatos = [f for f in archivos
                   if "BCA" in f["tipo"].upper() or "BCA" in f["archivo"].upper()]
     if not candidatos:
         return Check(GRUPO_BCA, "No previous BCA for this carrier", "ok",
                      "There is no BCA in the carrier's files."), None
 
-    mc_crm = digitos(carrier["mc"])
+    if mc_activo:
+        etiqueta_id, numero_id = f"MC {digitos(carrier['mc'])}", digitos(carrier["mc"])
+    else:
+        etiqueta_id, numero_id = f"DOT {digitos(carrier['dot'])}", digitos(carrier["dot"])
+
     ilegibles, desactualizadas = [], []
-    nombres_dif = {"Legal Name": "legal name", "DOT": "DOT", "direccion": "address", "MC": "MC", "firma": "signature"}
     for f in candidatos:
         texto = leer_pdf(f["guid"]) if f["guid"] else None
         if texto is None:
             ilegibles.append(f)
             continue
         t = norm(texto)
-        diferencias = []
-        if motus["legal"] and norm(motus["legal"]) not in t:
-            diferencias.append("Legal Name")
-        if not re.search(rf"(?<!\d){digitos(carrier['dot'])}(?!\d)", re.sub(r"\s", "", texto)):
-            diferencias.append("DOT")
-        if motus["calle"] and norm(motus["calle"]) not in t:
-            diferencias.append("direccion")
-        if mc_crm and mc_crm not in re.sub(r"\D", "", texto):
-            diferencias.append("MC")
-        firmada = any(p in f["archivo"].upper() for p in ("SIGNATURE", "SIGNED", "FIRMAD")) \
-            or "BCA" in f["tipo"].upper()
-        if not firmada:
-            diferencias.append("firma")
-        if not diferencias:
+        revision = [
+            ("legal name", bool(motus["legal"]) and norm(motus["legal"]) in t),
+            (etiqueta_id, _numero_en_texto(numero_id, texto)),
+            ("address", bool(motus["calle"]) and norm(motus["calle"]) in t),
+            ("signature", any(p in f["archivo"].upper() for p in ("SIGNATURE", "SIGNED", "FIRMAD"))
+             or "BCA" in f["tipo"].upper()),
+        ]
+        resumen = ". ".join(f"{n[0].upper() + n[1:]}: {'found' if ok else 'not found'}" for n, ok in revision) + "."
+        link = f"{CRM_URL}/Admin/Download/DownloadFile?downloadGuid={f['guid']}"
+        subida = f", uploaded {f['creado']}" if f["creado"] else ""
+        if all(ok for _, ok in revision):
             return Check(
                 GRUPO_BCA, "A current BCA is already on file", "fail",
-                f"{f['archivo']}" + (f", uploaded {f['creado']}," if f["creado"] else "")
-                + " is signed and matches MOTUS.",
-                "No new BCA is needed. Use the one already in the carrier's files.",
-                _link_carrier(carrier["_id"]), "View carrier files"), f
-        desactualizadas.append((f, [nombres_dif[d] for d in diferencias]))
+                f"{f['archivo']}{subida}. Checked against MOTUS. {resumen}",
+                "No new BCA is needed. Use the signed BCA already in the carrier's files.",
+                link, "Open the BCA on file"), f
+        desactualizadas.append((f, [n for n, ok in revision if not ok], resumen, link, subida))
 
     if ilegibles:
         nombres = ", ".join(f["archivo"] for f in ilegibles)
         return Check(GRUPO_BCA, "Previous BCA could not be read", "warn",
-                     f"The content of {nombres} could not be read automatically.",
+                     f"The content of {nombres} could not be read automatically. It may be a scanned image.",
                      "You can submit the request. BackOffice will review that BCA before processing it.",
                      _link_carrier(carrier["_id"]), "View carrier files"), None
 
-    f, dif = desactualizadas[0]
+    f, faltan, resumen, link, subida = desactualizadas[0]
+    otras = f" {len(desactualizadas) - 1} other previous BCA(s) also do not match." if len(desactualizadas) > 1 else ""
     return Check(GRUPO_BCA, "Previous BCA is out of date", "ok",
-                 f"{f['archivo']} does not match MOTUS ({', '.join(dif)}). A new BCA is needed."), None
+                 f"{f['archivo']}{subida}. Checked against MOTUS. {resumen} "
+                 f"A new BCA is needed because it is missing the current {', '.join(faltan)}.{otras}",
+                 "", link, "Open the previous BCA"), None
 
 
 def evaluar_bca(shipment_id: int, shipment: dict | None, asignacion: dict | None,
@@ -633,7 +647,7 @@ def evaluar_bca(shipment_id: int, shipment: dict | None, asignacion: dict | None
                   "You can submit the request. BackOffice will check whether a BCA is already on file.",
                   link_car, "View carrier files"))
     else:
-        chk, previa = revisar_bca_previa(archivos, leer_pdf, carrier, m)
+        chk, previa = revisar_bca_previa(archivos, leer_pdf, carrier, m, mc_activo)
         res.bca_previa = previa
         add(chk)
     return res
