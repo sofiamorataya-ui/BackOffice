@@ -30,6 +30,9 @@ La bitácora tiene dos archivos:
 | La dirección sale en rojo pero se ve igual | Compará letra por letra: abreviaturas (LANE/LN, AVE/AVENUE), APT/STE, ZIP. Si de verdad son idénticas, es un formato del CRM que la app no reconoce. | B-010 |
 | La app compara contra el P O BOX y no contra la dirección física | Identificadores de tipo de dirección de MOTUS. | B-005 |
 | "The carrier's files section could not be read" | La consulta interna `CarrierManagementPictureList` del CRM. Guardá un HAR del Carrier y revisalo. | B-006, B-014 |
+| "Previous BCA is out of date" y la BCA parece correcta | Leer la línea de detalle: dice qué no se encontró (legal name, MC/DOT, address o signature). Con MC activo se busca el MC#; sin MC o con MC inactivo, el DOT#. | B-019 |
+| El botón Open policy (PDF) da error 404 | Que el PDF esté en `static/policies/` con el mismo nombre que en `politicas.json`, y que `config.toml` tenga `enableStaticServing = true`. | B-020 |
+| La app muestra una versión vieja de la política | La vigente es la **primera** de la lista en `politicas.json`. | B-020 |
 | "Previous BCA could not be read" | Normal si el PDF es una imagen escaneada. BackOffice la revisa a mano. | B-014 |
 | "Validate code" dice "The code log is not set up" | Secrets `SUPABASE_URL` y `SUPABASE_KEY`, y que la tabla exista (`supabase.sql`). | B-009 |
 | "The verification could not be saved to the log" | Que la key sea la **service_role** y que se haya corrido la versión más reciente de `supabase.sql` (la 2.2.0 agregó columnas). | B-009, B-016 |
@@ -50,8 +53,19 @@ La bitácora tiene dos archivos:
 | Archivos del Carrier (BCAs previas) | POST `/Admin/CarrierManagement/CarrierManagementPictureList?DriverId=<id>` | `stt_core.CRM.archivos_carrier` |
 | Descarga de un archivo | `/Admin/Download/DownloadFile?downloadGuid=<guid>` | `stt_core.CRM.descargar` |
 | USDOT, Legal Name, dirección y MC | `https://motus.dot.gov/api/carriers/<DOT>` | `stt_core.motus_resumen` |
-| Reglas de la BCA | Procedimiento de BackOffice (ver B-008) | `stt_core.evaluar_bca` |
+| Reglas de la BCA | Procedimiento de BackOffice (ver B-008 y B-019) | `stt_core.evaluar_bca` |
+| Política vigente y su historial | `politicas.json` + PDF en `static/policies/` | `app.politica` |
 | Códigos y estadísticas | Tabla `prechecks` en Supabase | `stt_core.Registro` |
+
+## Cómo publicar una nueva versión de una política
+
+Buena práctica: nunca se reemplaza ni se borra un PDF publicado. Cada versión queda guardada para poder saber con qué reglas se aprobó cada solicitud.
+
+1. Subí el PDF nuevo a `static/policies/` con la versión y la fecha en el nombre, por ejemplo `BCA_Verification_Policy_v1.1_2026-11-15.pdf`.
+2. En `politicas.json`, agregá la versión **arriba** de la lista `versions`, con `version`, `effective` (AAAA-MM-DD), `file` y `changes` (qué cambió, en inglés porque lo ven los brokers).
+3. Si cambió alguna regla, ajustá también `stt_core.py`, para que la app aplique lo mismo que dice el documento.
+4. Subí la versión de la app en `app.py` (`VERSION`) y registrá el cambio en [REGISTRO.md](REGISTRO.md).
+5. Abrí la app y confirmá que la barra muestre la nueva versión y fecha, y que el botón abra el PDF nuevo.
 
 ## Secrets que necesita la app
 
