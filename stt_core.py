@@ -171,6 +171,8 @@ def parse_shipment(soup: BeautifulSoup) -> dict | None:
     return {
         "numero": texto.get("Shipment #", ""),
         "orden": texto.get("Order", ""),
+        "owner": por_for.get("OrderOwner", "") or texto.get("Shipment Owner", ""),
+        "dispatcher": por_for.get("DispatcherId", "") or texto.get("Dispatcher Id", ""),
         "status": texto.get("Status", ""),
         "origen_ciudad": por_for.get("BillingAddress_City", ""),
         "origen_estado": por_for.get("BillingAddress_State", ""),
@@ -261,7 +263,7 @@ class CRM:
         pwd = soup.find("input", {"type": "password"})
         form = pwd.find_parent("form") if pwd else None
         if not form:
-            raise CRMError("No encontré el formulario de inicio de sesión del CRM.")
+            raise CRMError("The CRM sign-in form was not found. The CRM may have changed its login page.")
         datos = {}
         for inp in form.find_all("input"):
             nombre = inp.get("name")
@@ -279,7 +281,7 @@ class CRM:
         accion = form.get("action") or "/login"
         s.post(accion if accion.startswith("http") else CRM_URL + accion, data=datos, timeout=30)
         if "/login" in s.get(f"{CRM_URL}/Admin", timeout=30).url.lower():
-            raise CRMError("El CRM rechazó el usuario o la contraseña configurados en la app.")
+            raise CRMError("The CRM rejected the username or password configured in the app.")
         self.s = s
 
     def _get(self, ruta: str, reintento: bool = True) -> requests.Response:
@@ -290,7 +292,7 @@ class CRM:
             if reintento:
                 self.s = None
                 return self._get(ruta, reintento=False)
-            raise CRMError("El CRM cerró la sesión y no se pudo volver a entrar.")
+            raise CRMError("The CRM ended the session and the app could not sign back in.")
         r.raise_for_status()
         return r
 
@@ -334,14 +336,37 @@ def texto_pdf(contenido: bytes) -> str | None:
 
 
 # ============================================================
-# Reglas de la BCA
+# Cumplimiento de políticas (genérico para BCA y futuros documentos)
+# ============================================================
+UMBRAL_ROJO = 0.25   # 25 % o menos de requisitos cumplidos -> rojo
+
+
+def nivel_cumplimiento(checks: list, requisitos_base: int) -> tuple[str, int, int]:
+    """Devuelve (nivel, cumplidos, total) con nivel 'green' | 'yellow' | 'red'.
+
+    Los requisitos que no se llegaron a evaluar (porque faltaba algo antes) cuentan como no cumplidos,
+    por eso el total nunca es menor que `requisitos_base`.
+    """
+    evaluados = [c for c in checks if c.estado in ("ok", "fail", "warn")]
+    cumplidos = sum(c.estado != "fail" for c in evaluados)
+    total = max(len(evaluados), requisitos_base)
+    if cumplidos == len(evaluados) and len(evaluados) >= requisitos_base:
+        return "green", cumplidos, total
+    if cumplidos / total <= UMBRAL_ROJO:
+        return "red", cumplidos, total
+    return "yellow", cumplidos, total
+
+
+# ============================================================
+# Reglas de la BCA (textos visibles en inglés de EE. UU.)
 # ============================================================
 GRUPO_DA = "Driver Assignment"
-GRUPO_CARRIER = "Carrier en el CRM"
+GRUPO_CARRIER = "Carrier in the CRM"
 GRUPO_MOTUS = "MOTUS"
-GRUPO_RUTA = "Ruta"
-GRUPO_BCA = "BCA existente"
+GRUPO_RUTA = "Route"
+GRUPO_BCA = "Existing BCA"
 ORDEN_GRUPOS = [GRUPO_DA, GRUPO_CARRIER, GRUPO_MOTUS, GRUPO_RUTA, GRUPO_BCA]
+REQUISITOS_BCA = 11   # 3 DA + 3 Carrier + 3 MOTUS + Ruta + BCA existente (sin MC; con MC son 13)
 
 
 @dataclass
@@ -381,6 +406,14 @@ class ResultadoBCA:
         evaluados = [c for c in self.checks if c.estado in ("ok", "fail", "warn")]
         return sum(c.estado != "fail" for c in evaluados), len(evaluados)
 
+    @property
+    def cumplimiento(self) -> tuple[str, int, int]:
+        """Nivel de cumplimiento del solicitante. La BCA ya existente no es un error del broker,
+        así que no cuenta en contra."""
+        checks = [c for c in self.checks if not (c.grupo == GRUPO_BCA and c.estado == "fail")]
+        base = REQUISITOS_BCA - (1 if self.veredicto == "YA_EXISTE" else 0)
+        return nivel_cumplimiento(checks, base)
+
 
 def _link_da(da_id):
     return f"{CRM_URL}/Admin/DriverAssignment/Details/{da_id}"
@@ -395,11 +428,12 @@ def revisar_bca_previa(archivos, leer_pdf, carrier, motus) -> tuple[Check, dict 
     candidatos = [f for f in archivos
                   if "BCA" in f["tipo"].upper() or "BCA" in f["archivo"].upper()]
     if not candidatos:
-        return Check(GRUPO_BCA, "Sin BCA previa del carrier", "ok",
-                     "No hay ninguna BCA en los archivos del Carrier."), None
+        return Check(GRUPO_BCA, "No previous BCA for this carrier", "ok",
+                     "There is no BCA in the carrier's files."), None
 
     mc_crm = digitos(carrier["mc"])
     ilegibles, desactualizadas = [], []
+    nombres_dif = {"Legal Name": "legal name", "DOT": "DOT", "direccion": "address", "MC": "MC", "firma": "signature"}
     for f in candidatos:
         texto = leer_pdf(f["guid"]) if f["guid"] else None
         if texto is None:
@@ -412,7 +446,7 @@ def revisar_bca_previa(archivos, leer_pdf, carrier, motus) -> tuple[Check, dict 
         if not re.search(rf"(?<!\d){digitos(carrier['dot'])}(?!\d)", re.sub(r"\s", "", texto)):
             diferencias.append("DOT")
         if motus["calle"] and norm(motus["calle"]) not in t:
-            diferencias.append("dirección")
+            diferencias.append("direccion")
         if mc_crm and mc_crm not in re.sub(r"\D", "", texto):
             diferencias.append("MC")
         firmada = any(p in f["archivo"].upper() for p in ("SIGNATURE", "SIGNED", "FIRMAD")) \
@@ -421,23 +455,23 @@ def revisar_bca_previa(archivos, leer_pdf, carrier, motus) -> tuple[Check, dict 
             diferencias.append("firma")
         if not diferencias:
             return Check(
-                GRUPO_BCA, "Ya existe una BCA vigente", "fail",
-                f"{f['archivo']}" + (f", subida el {f['creado']}," if f["creado"] else "")
-                + " está firmada y coincide con MOTUS.",
-                "No hace falta pedir otra BCA. Usá la que ya está en los archivos del Carrier.",
-                _link_carrier(carrier["_id"]), "Ver archivos del Carrier"), f
-        desactualizadas.append((f, diferencias))
+                GRUPO_BCA, "A current BCA is already on file", "fail",
+                f"{f['archivo']}" + (f", uploaded {f['creado']}," if f["creado"] else "")
+                + " is signed and matches MOTUS.",
+                "No new BCA is needed. Use the one already in the carrier's files.",
+                _link_carrier(carrier["_id"]), "View carrier files"), f
+        desactualizadas.append((f, [nombres_dif[d] for d in diferencias]))
 
     if ilegibles:
         nombres = ", ".join(f["archivo"] for f in ilegibles)
-        return Check(GRUPO_BCA, "BCA previa sin poder leer", "warn",
-                     f"No se pudo leer el contenido de {nombres}.",
-                     "Podés enviar la solicitud. BackOffice va a revisar esa BCA antes de procesarla.",
-                     _link_carrier(carrier["_id"]), "Ver archivos del Carrier"), None
+        return Check(GRUPO_BCA, "Previous BCA could not be read", "warn",
+                     f"The content of {nombres} could not be read automatically.",
+                     "You can submit the request. BackOffice will review that BCA before processing it.",
+                     _link_carrier(carrier["_id"]), "View carrier files"), None
 
     f, dif = desactualizadas[0]
-    return Check(GRUPO_BCA, "BCA previa desactualizada", "ok",
-                 f"{f['archivo']} no coincide con MOTUS ({', '.join(dif)}). Corresponde enviar una nueva."), None
+    return Check(GRUPO_BCA, "Previous BCA is out of date", "ok",
+                 f"{f['archivo']} does not match MOTUS ({', '.join(dif)}). A new BCA is needed."), None
 
 
 def evaluar_bca(shipment_id: int, shipment: dict | None, asignacion: dict | None,
@@ -448,63 +482,63 @@ def evaluar_bca(shipment_id: int, shipment: dict | None, asignacion: dict | None
     add = res.checks.append
 
     if shipment is None:
-        add(Check(GRUPO_DA, "Shipment encontrado", "fail",
-                  f"No existe el Shipment S-{shipment_id:06d} en el CRM.",
-                  "Revisá el número e intentá de nuevo."))
+        add(Check(GRUPO_DA, "Shipment found", "fail",
+                  f"Shipment S-{shipment_id:06d} does not exist in the CRM.",
+                  "Check the shipment number and try again."))
         return res
 
     # ---- 1. Driver Assignment ----
     if asignacion is None:
-        add(Check(GRUPO_DA, "Driver asignado", "fail",
-                  "El Shipment no tiene ningún driver en Drivers Assignments.",
-                  "Asigná el driver en la sección Drivers Assignments del Shipment.",
-                  f"{CRM_URL}/Admin/Shipments/Details/{shipment_id}", "Abrir el Shipment"))
+        add(Check(GRUPO_DA, "Driver assigned", "fail",
+                  "The shipment has no driver in Drivers Assignments.",
+                  "Assign the driver in the Drivers Assignments section of the shipment.",
+                  f"{CRM_URL}/Admin/Shipments/Details/{shipment_id}", "Open shipment"))
         return res
 
     link_da = _link_da(asignacion["da_id"])
-    add(Check(GRUPO_DA, "Driver asignado", "ok",
-              f"{asignacion['da_nombre']}, {asignacion['driver'] or (da or {}).get('driver') or 'driver sin nombre'}"))
+    add(Check(GRUPO_DA, "Driver assigned", "ok",
+              f"{asignacion['da_nombre']}, {asignacion['driver'] or (da or {}).get('driver') or 'driver name missing'}"))
 
     status = (da or {}).get("status", "")
     if status.strip().lower() == "dispatched":
-        add(Check(GRUPO_DA, "Driver Assignment en Dispatched", "ok", "Status: Dispatched"))
+        add(Check(GRUPO_DA, "Driver Assignment is Dispatched", "ok", "Status: Dispatched"))
     else:
-        add(Check(GRUPO_DA, "Driver Assignment en Dispatched", "fail",
-                  f"Status actual: {status or 'vacío'}.",
-                  f"Cambiá el status de {asignacion['da_nombre']} a Dispatched.",
-                  link_da, f"Abrir {asignacion['da_nombre']}"))
+        add(Check(GRUPO_DA, "Driver Assignment is Dispatched", "fail",
+                  f"Current status: {status or 'blank'}.",
+                  f"Change the status of {asignacion['da_nombre']} to Dispatched.",
+                  link_da, f"Open {asignacion['da_nombre']}"))
 
     email = (da or {}).get("email", "").strip()
     if "@" in email:
-        add(Check(GRUPO_DA, "Email en el Driver Assignment", "ok", email))
+        add(Check(GRUPO_DA, "Email on the Driver Assignment", "ok", email))
     else:
-        add(Check(GRUPO_DA, "Email en el Driver Assignment", "fail",
-                  "El Driver Assignment no tiene email.",
-                  f"Agregá el email en {asignacion['da_nombre']}. A ese correo se envía la BCA.",
-                  link_da, f"Abrir {asignacion['da_nombre']}"))
+        add(Check(GRUPO_DA, "Email on the Driver Assignment", "fail",
+                  "The Driver Assignment has no email.",
+                  f"Add the email to {asignacion['da_nombre']}. The BCA is sent to that address.",
+                  link_da, f"Open {asignacion['da_nombre']}"))
 
     # ---- 2. Carrier en el CRM ----
     if carrier is None:
-        add(Check(GRUPO_CARRIER, "Carrier enlazado", "fail",
-                  "El Driver Assignment no tiene un Carrier enlazado.",
-                  "Seleccioná el Carrier en el Driver Assignment.", link_da, f"Abrir {asignacion['da_nombre']}"))
+        add(Check(GRUPO_CARRIER, "Carrier linked", "fail",
+                  "The Driver Assignment has no carrier linked.",
+                  "Select the carrier on the Driver Assignment.", link_da, f"Open {asignacion['da_nombre']}"))
         return res
 
     link_car = _link_carrier(carrier["_id"])
-    for etiqueta, clave, obligatorio_txt in [
-        ("Company Name", "nombre", "Agregá el nombre de la empresa del carrier."),
-        ("DOT", "dot", "El DOT es obligatorio para todos los carriers en STT. Agregalo en el Carrier."),
-        ("Address", "direccion", "Agregá la dirección: tiene que ser la Principal Place of Business de MOTUS."),
+    for etiqueta, clave, falta in [
+        ("Company Name", "nombre", "Add the carrier's company name."),
+        ("DOT", "dot", "A DOT number is required for every carrier at STT. Add it to the carrier."),
+        ("Address", "direccion", "Add the address. It must be the Principal Place of Business shown in MOTUS."),
     ]:
         valor = carrier.get(clave, "").strip()
         if valor:
             add(Check(GRUPO_CARRIER, etiqueta, "ok", valor))
         else:
-            add(Check(GRUPO_CARRIER, etiqueta, "fail", "Está vacío en el Carrier.",
-                      obligatorio_txt, link_car, "Abrir el Carrier"))
+            add(Check(GRUPO_CARRIER, etiqueta, "fail", "This field is blank on the carrier.",
+                      falta, link_car, "Open carrier"))
     mc_crm = digitos(carrier.get("mc"))
     add(Check(GRUPO_CARRIER, "MC", "ok" if mc_crm else "info",
-              carrier["mc"] if mc_crm else "Sin MC. El MC es opcional; sin él la carga debe quedarse en el mismo estado."))
+              carrier["mc"] if mc_crm else "No MC. The MC is optional; without it the load must stay within one state."))
 
     dot = digitos(carrier.get("dot"))
     if not dot:
@@ -512,10 +546,10 @@ def evaluar_bca(shipment_id: int, shipment: dict | None, asignacion: dict | None
 
     # ---- 3. MOTUS ----
     if motus_data is None:
-        add(Check(GRUPO_MOTUS, "DOT registrado en MOTUS", "fail",
-                  f"El DOT {dot} no existe en MOTUS.",
-                  "Confirmá el número de DOT con el carrier y corregilo en el Carrier.",
-                  link_car, "Abrir el Carrier"))
+        add(Check(GRUPO_MOTUS, "DOT registered in MOTUS", "fail",
+                  f"DOT {dot} does not exist in MOTUS.",
+                  "Confirm the DOT number with the carrier and correct it on the carrier.",
+                  link_car, "Open carrier"))
         return res
 
     m = motus_resumen(motus_data)
@@ -523,86 +557,85 @@ def evaluar_bca(shipment_id: int, shipment: dict | None, asignacion: dict | None
     link_motus = MOTUS_WEB.format(dot=dot)
 
     if m["dot_activo"]:
-        add(Check(GRUPO_MOTUS, "USDOT activo", "ok", f"USDOT {dot}: Active"))
+        add(Check(GRUPO_MOTUS, "USDOT is active", "ok", f"USDOT {dot}: Active"))
     else:
-        add(Check(GRUPO_MOTUS, "USDOT activo", "fail",
-                  f"USDOT {dot}: {m['estado_dot'] or 'sin estado'}"
-                  + (", con orden de Out of Service" if m["fuera_servicio"] else "") + ".",
-                  "El carrier no está autorizado para operar. Asigná otro carrier.",
-                  link_motus, "Ver en MOTUS"))
+        add(Check(GRUPO_MOTUS, "USDOT is active", "fail",
+                  f"USDOT {dot}: {m['estado_dot'] or 'no status'}"
+                  + (", under an Out-of-Service order" if m["fuera_servicio"] else "") + ".",
+                  "This carrier is not authorized to operate. Assign a different carrier.",
+                  link_motus, "View in MOTUS"))
 
     if norm(carrier["nombre"]) == norm(m["legal"]):
-        add(Check(GRUPO_MOTUS, "Company Name igual al Legal Name", "ok", m["legal"]))
+        add(Check(GRUPO_MOTUS, "Company Name matches Legal Name", "ok", m["legal"]))
     else:
-        extra = " Coincide con el DBA, pero la BCA va a nombre legal." \
+        extra = " It matches the DBA, but the BCA must use the legal name." \
             if m["dba"] and norm(carrier["nombre"]) == norm(m["dba"]) else ""
-        add(Check(GRUPO_MOTUS, "Company Name igual al Legal Name", "fail",
-                  f"CRM: {carrier['nombre'] or 'vacío'}. MOTUS: {m['legal'] or 'sin Legal Name'}.{extra}",
-                  f"Escribí el Company Name exactamente como en MOTUS: {m['legal']}.",
-                  link_car, "Abrir el Carrier"))
+        add(Check(GRUPO_MOTUS, "Company Name matches Legal Name", "fail",
+                  f"CRM: {carrier['nombre'] or 'blank'}. MOTUS: {m['legal'] or 'no legal name'}.{extra}",
+                  f"Enter the company name exactly as it appears in MOTUS: {m['legal']}.",
+                  link_car, "Open carrier"))
 
     if direccion_igual(carrier["direccion"], m):
-        add(Check(GRUPO_MOTUS, "Dirección igual a la Principal Place of Business", "ok", m["direccion"]))
+        add(Check(GRUPO_MOTUS, "Address matches Principal Place of Business", "ok", m["direccion"]))
     else:
-        add(Check(GRUPO_MOTUS, "Dirección igual a la Principal Place of Business", "fail",
-                  f"CRM: {carrier['direccion'] or 'vacía'}. MOTUS: {m['direccion'] or 'sin dirección física'}.",
-                  f"Copiá la dirección exactamente como aparece en MOTUS: {m['direccion']}. "
-                  "No se aceptan abreviaturas distintas ni la dirección de correo.",
-                  link_car, "Abrir el Carrier"))
+        add(Check(GRUPO_MOTUS, "Address matches Principal Place of Business", "fail",
+                  f"CRM: {carrier['direccion'] or 'blank'}. MOTUS: {m['direccion'] or 'no physical address'}.",
+                  f"Enter the address exactly as it appears in MOTUS: {m['direccion']}. "
+                  "Different abbreviations and the mailing address are not accepted.",
+                  link_car, "Open carrier"))
 
     mc_activo = False
     if mc_crm:
         auth = motus_property(m, mc_crm)
         if auth is None:
-            otros = ", ".join(a["docket"] for a in m["autoridades"] if a["tipo"] == AUTORIDAD_PROPERTY) or "ninguno"
-            add(Check(GRUPO_MOTUS, "MC con autoridad Motor Carrier of Property", "fail",
-                      f"El MC {mc_crm} del CRM no aparece en MOTUS para este DOT (MOTUS tiene: {otros}).",
-                      "Corregí el MC en el Carrier o dejalo vacío si el carrier no tiene MC.",
-                      link_car, "Abrir el Carrier"))
+            otros = ", ".join(a["docket"] for a in m["autoridades"] if a["tipo"] == AUTORIDAD_PROPERTY) or "none"
+            add(Check(GRUPO_MOTUS, "MC holds Motor Carrier of Property authority", "fail",
+                      f"MC {mc_crm} from the CRM is not listed in MOTUS for this DOT (MOTUS shows: {otros}).",
+                      "Correct the MC on the carrier, or leave it blank if the carrier has no MC.",
+                      link_car, "Open carrier"))
         elif auth["estado"] == "Active":
             mc_activo = True
-            add(Check(GRUPO_MOTUS, "MC con autoridad Motor Carrier of Property", "ok",
+            add(Check(GRUPO_MOTUS, "MC holds Motor Carrier of Property authority", "ok",
                       f"{auth['docket']}: Active"))
         else:
-            add(Check(GRUPO_MOTUS, "MC con autoridad Motor Carrier of Property", "warn",
-                      f"{auth['docket']}: {auth['estado'] or 'sin estado'} en MOTUS. "
-                      "Se revisa la regla de mismo estado."))
+            add(Check(GRUPO_MOTUS, "MC holds Motor Carrier of Property authority", "warn",
+                      f"{auth['docket']}: {auth['estado'] or 'no status'} in MOTUS. "
+                      "The same-state rule applies."))
 
     # ---- 4. Ruta (solo sin MC o con MC inactivo) ----
     o, d = shipment["origen_estado"].strip().upper(), shipment["destino_estado"].strip().upper()
-    ruta = f"{o or '?'} a {d or '?'}"
+    ruta = f"{o or '?'} to {d or '?'}"
     if mc_activo:
-        add(Check(GRUPO_RUTA, "Ruta permitida", "ok", f"De {ruta}. Con MC activo se permite mover carga entre estados."))
+        add(Check(GRUPO_RUTA, "Route is allowed", "ok", f"{ruta}. Interstate loads are allowed with an active MC."))
     elif not (o and d):
-        add(Check(GRUPO_RUTA, "Ruta permitida", "fail",
-                  "Al Shipment le falta el estado de origen o de destino.",
-                  "Completá Origin y Destination en Route Information del Shipment.",
-                  f"{CRM_URL}/Admin/Shipments/Details/{shipment_id}", "Abrir el Shipment"))
+        add(Check(GRUPO_RUTA, "Route is allowed", "fail",
+                  "The shipment is missing the origin or destination state.",
+                  "Complete Origin and Destination under Route Information on the shipment.",
+                  f"{CRM_URL}/Admin/Shipments/Details/{shipment_id}", "Open shipment"))
     elif o == d:
-        add(Check(GRUPO_RUTA, "Ruta permitida", "ok", f"De {ruta}: la carga no sale del estado."))
+        add(Check(GRUPO_RUTA, "Route is allowed", "ok", f"{ruta}: the load stays within one state."))
     else:
         en_motus = motus_property(m)
         if not mc_crm and en_motus and en_motus["estado"] == "Active":
-            solucion = (f"MOTUS muestra {en_motus['docket']} activo para este carrier. "
-                        "Agregalo en el Carrier y volvé a verificar.")
+            solucion = (f"MOTUS shows {en_motus['docket']} as active for this carrier. "
+                        "Add it to the carrier and verify again.")
         else:
-            solucion = ("Sin MC activo, el carrier solo puede mover carga dentro de un mismo estado. "
-                        "Asigná un carrier con MC activo o corregí el MC del Carrier.")
-        add(Check(GRUPO_RUTA, "Ruta permitida", "fail",
-                  f"La carga va de {ruta} y el carrier no tiene MC activo.",
-                  solucion, link_car, "Abrir el Carrier"))
+            solucion = ("Without an active MC, the carrier can only move loads within one state. "
+                        "Assign a carrier with an active MC or correct the carrier's MC.")
+        add(Check(GRUPO_RUTA, "Route is allowed", "fail",
+                  f"The load moves from {ruta} and the carrier has no active MC.",
+                  solucion, link_car, "Open carrier"))
 
     # ---- 5. BCA existente ----
     if archivos is None:
-        add(Check(GRUPO_BCA, "Archivos del Carrier", "warn",
-                  "No se pudo leer la sección de archivos del Carrier.",
-                  "Podés enviar la solicitud. BackOffice va a revisar si ya hay una BCA.",
-                  link_car, "Ver archivos del Carrier"))
+        add(Check(GRUPO_BCA, "Carrier files", "warn",
+                  "The carrier's files section could not be read.",
+                  "You can submit the request. BackOffice will check whether a BCA is already on file.",
+                  link_car, "View carrier files"))
     else:
         chk, previa = revisar_bca_previa(archivos, leer_pdf, carrier, m)
         res.bca_previa = previa
         add(chk)
-    res.motus = m
     return res
 
 
