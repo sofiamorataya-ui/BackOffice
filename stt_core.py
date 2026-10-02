@@ -217,14 +217,32 @@ def parse_archivos(js: dict) -> list[dict]:
 
 
 def partir_direccion_crm(direccion: str) -> dict:
-    """'395 GARCIA LANE, SAN LUIS, AZ, 85349, US' -> calle, ciudad, estado, zip."""
-    partes = [p.strip() for p in (direccion or "").split(",") if p.strip()]
-    if partes and partes[-1].upper() in ("US", "USA", "UNITED STATES"):
-        partes = partes[:-1]
-    if len(partes) < 4:
-        return {"calle": direccion or "", "ciudad": "", "estado": "", "zip": ""}
-    return {"calle": ", ".join(partes[:-3]), "ciudad": partes[-3],
-            "estado": partes[-2], "zip": digitos(partes[-1])[:5]}
+    """Separa la dirección del CRM en calle, ciudad, estado y zip.
+
+    Acepta los formatos que usa el CRM, por ejemplo:
+      '395 GARCIA LANE, SAN LUIS, AZ, 85349, US'
+      '8212 NE 13TH AVE APT C7, VANCOUVER, WA 98665'
+    """
+    texto = re.sub(r"[,\s]+(US|USA|UNITED STATES)\s*$", "", (direccion or "").strip(), flags=re.I)
+    m = re.match(r"^(?P<calle>.+?),\s*(?P<ciudad>[^,]+?)\s*,\s*(?P<estado>[A-Za-z]{2})\s*,?\s*"
+                 r"(?P<zip>\d{5})(?:-\d{4})?\s*$", texto)
+    if not m:
+        return {"calle": texto, "ciudad": "", "estado": "", "zip": ""}
+    return {"calle": m["calle"].strip(), "ciudad": m["ciudad"].strip(),
+            "estado": m["estado"].upper(), "zip": m["zip"]}
+
+
+def direccion_igual(direccion_crm: str, motus: dict) -> bool:
+    """Compara contra la Principal Place of Business de MOTUS: mismas palabras, sin importar
+    mayúsculas, comas ni el 'US' final. Una abreviatura distinta (LANE / LN) no es igual."""
+    if not motus.get("direccion"):
+        return False
+    p = partir_direccion_crm(direccion_crm)
+    if p["ciudad"]:
+        return (norm(p["calle"]) == norm(motus["calle"]) and norm(p["ciudad"]) == norm(motus["ciudad"])
+                and norm(p["estado"]) == norm(motus["estado"]) and p["zip"] == motus["zip"])
+    # Formato no reconocido: se compara el texto completo
+    return norm(p["calle"]) == norm(f"{motus['calle']} {motus['ciudad']} {motus['estado']} {motus['zip']}")
 
 
 class CRM:
@@ -523,14 +541,7 @@ def evaluar_bca(shipment_id: int, shipment: dict | None, asignacion: dict | None
                   f"Escribí el Company Name exactamente como en MOTUS: {m['legal']}.",
                   link_car, "Abrir el Carrier"))
 
-    p = partir_direccion_crm(carrier["direccion"])
-    igual = bool(m["direccion"]) and all([
-        norm(p["calle"]) == norm(m["calle"]),
-        norm(p["ciudad"]) == norm(m["ciudad"]),
-        norm(p["estado"]) == norm(m["estado"]),
-        p["zip"] == m["zip"],
-    ])
-    if igual:
+    if direccion_igual(carrier["direccion"], m):
         add(Check(GRUPO_MOTUS, "Dirección igual a la Principal Place of Business", "ok", m["direccion"]))
     else:
         add(Check(GRUPO_MOTUS, "Dirección igual a la Principal Place of Business", "fail",
