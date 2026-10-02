@@ -260,9 +260,7 @@ def html_comparacion(r: core.ResultadoBCA) -> str:
     c, m = r.carrier, r.motus
     if not c or not m:
         return ""
-    p = core.partir_direccion_crm(c["direccion"])
-    dir_ok = all([core.norm(p["calle"]) == core.norm(m["calle"]), core.norm(p["ciudad"]) == core.norm(m["ciudad"]),
-                  core.norm(p["estado"]) == core.norm(m["estado"]), p["zip"] == m["zip"]])
+    dir_ok = core.direccion_igual(c["direccion"], m)
     auth = core.motus_property(m, core.digitos(c["mc"]) or None)
     mc_motus = f"{auth['docket']}: {auth['estado']}" if auth else "Sin autoridad Property"
 
@@ -315,7 +313,7 @@ with tab_bca:
     with st.form("form_bca", border=True):
         c1, c2, c3 = st.columns([2, 2, 1.2], vertical_alignment="bottom")
         texto_ship = c1.text_input("Shipment", placeholder="S-039981")
-        quien = c2.text_input("Tu nombre", placeholder="Quién pide la BCA")
+        quien = c2.text_input("Broker o dispatcher que pide la BCA", placeholder="Tu nombre y apellido")
         verificar = c3.form_submit_button("Verificar BCA", type="primary", use_container_width=True)
 
     if verificar:
