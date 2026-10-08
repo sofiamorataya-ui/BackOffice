@@ -18,7 +18,7 @@ import streamlit as st
 import stt_core as core
 
 RAIZ = Path(__file__).parent
-VERSION = "2.3.0"  # Cambiala en cada entrega y anotala en bitacora/REGISTRO.md
+VERSION = "2.4.0"  # Cambiala en cada entrega y anotala en bitacora/REGISTRO.md
 ZONA = ZoneInfo("America/Guatemala")
 
 st.set_page_config(page_title="STT BackOffice", page_icon=str(RAIZ / "assets" / "stt_icon.png"),
@@ -102,7 +102,7 @@ div[data-testid="stForm"]{border:1px solid var(--rule);border-radius:4px;backgro
 .grp-h span{font-size:14.5px;color:var(--muted)}
 .chk{display:grid;grid-template-columns:30px 1fr;gap:12px;padding:11px 0;border-bottom:1px solid var(--rule)}
 .mark{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;color:#fff;font-weight:700;font-size:14px;margin-top:2px}
-.mark--ok{background:var(--go)} .mark--fail{background:var(--red)} .mark--warn{background:var(--caution)} .mark--info{background:#8A9099}
+.mark--ok{background:var(--go)} .mark--fail{background:var(--red)} .mark--warn{background:var(--caution)} .mark--info{background:#8A9099} .mark--covered{background:var(--ink)}
 .chk-t{font-weight:600;font-size:16.5px}
 .chk--fail .chk-t{color:var(--red)}
 .chk-d{color:var(--muted);font-size:15px;margin-top:1px;overflow-wrap:break-word}
@@ -324,9 +324,14 @@ def html_veredicto(r: core.ResultadoBCA, codigo: str | None, cuando: str) -> str
         elif avisos > 1:
             sub += f" BackOffice will review the {avisos} items marked in yellow."
     elif r.veredicto == "YA_EXISTE":
-        cls, titulo = "stop", "Do not send: BCA on file"
-        sub = ("This carrier already has a signed BCA that matches current MOTUS information. "
-               "No new request is needed.")
+        if r.terminos_app:
+            cls, titulo = "stop", "Do not send: signed in app"
+            sub = (f"{e(r.terminos_app['nombre'])} already accepted the terms in the STT app (Terms Status: True), "
+                   "which counts as a signed BCA. No new request is needed.")
+        else:
+            cls, titulo = "stop", "Do not send: BCA on file"
+            sub = ("This carrier already has a signed BCA that matches current MOTUS information. "
+                   "No new request is needed.")
     else:
         n = len(r.fallas)
         cls, titulo = "stop", "Not ready to send"
@@ -432,7 +437,7 @@ def html_acciones(r: core.ResultadoBCA) -> str:
     return f'<div class="acciones"><h3>{titulo}</h3>{ref}<ol>{"".join(items)}</ol></div>'
 
 
-MARCAS = {"ok": "✓", "fail": "✕", "warn": "!", "info": "–"}
+MARCAS = {"ok": "✓", "fail": "✕", "warn": "!", "info": "–", "covered": "✓"}
 
 
 def html_checklist(r: core.ResultadoBCA) -> str:
@@ -442,7 +447,9 @@ def html_checklist(r: core.ResultadoBCA) -> str:
         if not cs:
             continue
         evaluados = [c for c in cs if c.estado != "info"]
-        bien = sum(c.estado != "fail" for c in evaluados)
+        # Una BCA vigente o los términos firmados en la app no son un error: ya está cubierto.
+        cubierto = lambda c: c.grupo == core.GRUPO_BCA and c.estado == "fail"
+        bien = sum(c.estado != "fail" or cubierto(c) for c in evaluados)
         filas = []
         for c in cs:
             nota = ""
@@ -452,8 +459,9 @@ def html_checklist(r: core.ResultadoBCA) -> str:
             enlace = ""
             if c.estado in ("ok", "info") and c.link:
                 enlace = f' <a href="{e(c.link)}" target="_blank">{e(c.link_texto)}</a>'
+            visual = "covered" if cubierto(c) else c.estado
             filas.append(
-                f'<div class="chk chk--{c.estado}"><div class="mark mark--{c.estado}">{MARCAS[c.estado]}</div>'
+                f'<div class="chk chk--{visual}"><div class="mark mark--{visual}">{MARCAS[visual]}</div>'
                 f'<div><div class="chk-t">{e(c.titulo)}</div><div class="chk-d">{e(c.detalle)}{enlace}</div>{nota}</div></div>')
         resumen = f"{bien} of {len(evaluados)}" if evaluados else ""
         partes.append(f'<div class="grp"><div class="grp-h"><b>{e(g)}</b><span>{resumen}</span></div>{"".join(filas)}</div>')
@@ -577,7 +585,7 @@ with tab_bca:
             '<div class="paso"><b>Carrier</b><span>Company name, DOT, MC, and address complete</span></div>'
             '<div class="paso"><b>MOTUS</b><span>Active USDOT and MC, with identical name and Principal Place of Business</span></div>'
             '<div class="paso"><b>Route</b><span>Without an active MC, the load cannot leave the state</span></div>'
-            '<div class="paso"><b>Existing BCA</b><span>If a signed, current BCA is on file, no new one is sent</span></div>'
+            '<div class="paso"><b>Existing BCA</b><span>If a signed, current BCA is on file, or the driver accepted the terms in the STT app, no new one is sent</span></div>'
             '</div>',
             unsafe_allow_html=True,
         )
