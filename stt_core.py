@@ -166,6 +166,7 @@ def parse_shipment(soup: BeautifulSoup) -> dict | None:
             "carrier_id": int(re.search(r"/Details/(\d+)", a_car["href"]).group(1)) if a_car else None,
             "carrier_nombre": a_car.get_text(strip=True) if a_car else "",
             "driver": a_drv.get_text(" ", strip=True) if a_drv else "",
+            "driver_id": int(re.search(r"/DriverDetails/(\d+)", a_drv["href"]).group(1)) if a_drv else None,
         })
 
     return {
@@ -204,6 +205,18 @@ def parse_carrier(soup: BeautifulSoup) -> dict:
         "status": texto.get("Status", ""),
         "_token": token.get("value", "") if token else "",
     }
+
+
+def parse_conductores(js: dict) -> list[dict]:
+    """Sección Driver Information del Carrier (POST /Admin/Driver/DriverList)."""
+    filas = js.get("Data") or js.get("data") or []
+    return [{
+        "id": f.get("Id"),
+        "nombre": " ".join(str(f.get("Name") or "").split()),
+        "email": f.get("EmailID") or "",
+        "terms": str(f.get("TermsStatus") if f.get("TermsStatus") is not None else "").strip(),
+        "estado": f.get("DriverStatus") or "",
+    } for f in filas]
 
 
 def parse_archivos(js: dict) -> list[dict]:
@@ -319,6 +332,17 @@ class CRM:
         r.raise_for_status()
         return parse_archivos(r.json())
 
+    def conductores_carrier(self, carrier_id: int, token: str) -> list[dict]:
+        r = self.s.post(
+            f"{CRM_URL}/Admin/Driver/DriverList?CarrierId={carrier_id}",
+            data={"draw": "1", "start": "0", "length": "500", "__RequestVerificationToken": token},
+            headers={"X-Requested-With": "XMLHttpRequest",
+                     "Referer": f"{CRM_URL}/Admin/Carrier/Details/{carrier_id}"},
+            timeout=30,
+        )
+        r.raise_for_status()
+        return parse_conductores(r.json())
+
     def descargar(self, guid: str) -> bytes:
         return self._get(f"/Admin/Download/DownloadFile?downloadGuid={guid}").content
 
@@ -389,6 +413,7 @@ class ResultadoBCA:
     carrier: dict | None = None
     motus: dict | None = None
     bca_previa: dict | None = None
+    terminos_app: dict | None = None     # fila de Driver Information con Terms Status True
     checks: list[Check] = field(default_factory=list)
 
     @property
@@ -488,9 +513,65 @@ def revisar_bca_previa(archivos, leer_pdf, carrier, motus, mc_activo: bool) -> t
                  "", link, "Open the previous BCA"), None
 
 
+def driver_firmo_en_app(conductores: list[dict] | None, asignacion: dict | None,
+                        da: dict | None) -> tuple[str, dict | None]:
+    """Excepción de BackOffice (B-021), válida para BCA y Load Confirmation.
+
+    Si el driver del Driver Assignment aparece en Driver Information del Carrier con
+    Terms Status = True, firmó los términos en la app de STT y no hace falta una BCA nueva.
+    No importa si "Send To App" está marcado en el Driver Assignment.
+
+    Devuelve ('si' | 'no' | 'no_listado' | 'desconocido', fila del driver).
+    """
+    if conductores is None or asignacion is None:
+        return "desconocido", None
+    fila = None
+    if asignacion.get("driver_id"):
+        fila = next((c for c in conductores if c["id"] == asignacion["driver_id"]), None)
+    if fila is None:
+        nombre = norm(asignacion.get("driver") or (da or {}).get("driver"))
+        fila = next((c for c in conductores if nombre and norm(c["nombre"]) == nombre), None)
+    if fila is None:
+        return "no_listado", None
+    return ("si" if fila["terms"].lower() in ("true", "1", "yes") else "no"), fila
+
+
 def evaluar_bca(shipment_id: int, shipment: dict | None, asignacion: dict | None,
                 da: dict | None, carrier: dict | None, archivos: list[dict] | None,
-                motus_data: dict | None, leer_pdf) -> ResultadoBCA:
+                motus_data: dict | None, leer_pdf, conductores: list[dict] | None = None) -> ResultadoBCA:
+    """Procedimiento de BCA + excepción de términos firmados en la app."""
+    estado_app, fila = driver_firmo_en_app(conductores, asignacion, da) if carrier else ("desconocido", None)
+    res = _evaluar_bca_base(shipment_id, shipment, asignacion, da, carrier, archivos, motus_data, leer_pdf,
+                            revisar_archivos=(estado_app != "si"))
+    if carrier is None or asignacion is None:
+        return res
+    link_car = _link_carrier(carrier["_id"])
+    nombre = (fila or {}).get("nombre") or asignacion.get("driver") or "The driver"
+    if estado_app == "si":
+        res.terminos_app = fila
+        res.checks.append(Check(
+            GRUPO_BCA, "Driver accepted the terms in the STT app", "fail",
+            f"{nombre} is listed in the carrier's Driver Information with Terms Status: True. "
+            "The driver signed through the app, so it counts as a signed BCA. "
+            "The Send To App box on the Driver Assignment does not need to be checked.",
+            "No new BCA is needed. The driver already accepted the terms in the STT app.",
+            link_car, "View Driver Information"))
+        return res
+    if estado_app in ("no", "no_listado"):
+        detalle = (f"{nombre} is listed in Driver Information with Terms Status: {fila['terms'] or 'blank'}."
+                   if estado_app == "no" else
+                   f"{nombre} is not listed in the carrier's Driver Information.")
+        info = Check(GRUPO_BCA, "Terms accepted in the STT app", "info",
+                     detalle + " The app exception does not apply, so the BCA files are checked.")
+        pos = next((i for i, c in enumerate(res.checks) if c.grupo == GRUPO_BCA), len(res.checks))
+        if pos < len(res.checks):
+            res.checks.insert(pos, info)
+    return res
+
+
+def _evaluar_bca_base(shipment_id: int, shipment: dict | None, asignacion: dict | None,
+                da: dict | None, carrier: dict | None, archivos: list[dict] | None,
+                motus_data: dict | None, leer_pdf, revisar_archivos: bool = True) -> ResultadoBCA:
     """Aplica el procedimiento de verificación de BCA de BackOffice. Función pura (sin red)."""
     res = ResultadoBCA(shipment_id, shipment, asignacion, da, carrier)
     add = res.checks.append
@@ -641,6 +722,8 @@ def evaluar_bca(shipment_id: int, shipment: dict | None, asignacion: dict | None
                   solucion, link_car, "Open carrier"))
 
     # ---- 5. BCA existente ----
+    if not revisar_archivos:
+        return res      # el driver firmó en la app (lo agrega evaluar_bca)
     if archivos is None:
         add(Check(GRUPO_BCA, "Carrier files", "warn",
                   "The carrier's files section could not be read.",
@@ -662,7 +745,7 @@ def pre_verificar_bca(crm: CRM, shipment_id: int, motus_fn=motus_consultar) -> l
     resultados = []
     for asig in shipment["asignaciones"]:
         da = crm.driver_assignment(asig["da_id"])
-        carrier = archivos = motus_data = None
+        carrier = archivos = motus_data = conductores = None
         if asig["carrier_id"]:
             carrier = crm.carrier(asig["carrier_id"])
             carrier["_id"] = asig["carrier_id"]
@@ -670,6 +753,10 @@ def pre_verificar_bca(crm: CRM, shipment_id: int, motus_fn=motus_consultar) -> l
                 archivos = crm.archivos_carrier(asig["carrier_id"], carrier["_token"])
             except Exception:
                 archivos = None
+            try:
+                conductores = crm.conductores_carrier(asig["carrier_id"], carrier["_token"])
+            except Exception:
+                conductores = None
             dot = digitos(carrier["dot"])
             motus_data = motus_fn(dot) if dot else None
 
@@ -680,7 +767,7 @@ def pre_verificar_bca(crm: CRM, shipment_id: int, motus_fn=motus_consultar) -> l
                 return None
 
         resultados.append(evaluar_bca(shipment_id, shipment, asig, da, carrier,
-                                      archivos, motus_data, leer_pdf))
+                                      archivos, motus_data, leer_pdf, conductores))
     return resultados
 
 
