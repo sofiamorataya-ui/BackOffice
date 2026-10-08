@@ -6,6 +6,7 @@ Historial de versiones y entradas de la bitácora. La guía de uso y el diagnós
 
 | Versión | Fecha | Cambios | Entradas |
 |---|---|---|---|
+| 2.4.0 | 2026-10-08 | Excepción: si el driver del Driver Assignment tiene Terms Status True en Driver Information del Carrier, firmó en la app y no se pide BCA nueva. Las BCAs ya cubiertas se ven como "cubierto" y no como error. | B-021, B-022 |
 | 2.3.0 | 2026-10-02 | Corrige la regla de BCA previa: con MC activo se busca el MC# en la BCA, no el DOT#. Mensajes de BCA previa más claros, con enlace al archivo. Política de BCA publicada en la app con versión, fecha e historial. Cada verificación guarda la versión de política aplicada. | B-014, B-019, B-020 |
 | 2.2.0 | 2026-10-02 | Toda la app en inglés de EE. UU. con fechas en hora de Guatemala. Banda de cumplimiento de políticas (verde, amarillo y rojo). Shipment Owner, Dispatcher y "Requested by" leídos del CRM. Nuevas columnas en Supabase. | B-016, B-017, B-018 |
 | 2.1.0 | 2026-10-02 | Diseño 100 % responsivo (teléfono, tablet, computadora y TV). Pestañas renombradas: Verificar BCA, Validar código, Consulta USDOT. Versión visible en el pie de página. Se crea esta bitácora. | B-012, B-013, B-015 |
@@ -15,6 +16,33 @@ Historial de versiones y entradas de la bitácora. La guía de uso y el diagnós
 | 1.0.0 | 2026-09-30 | Validador de USDOT contra MOTUS (uno o varios DOT). | B-001 a B-005 |
 
 ## Entradas
+
+### B-022 · Lo que ya está cubierto se veía como error en el checklist
+- **Fecha:** 2026-10-08
+- **Tipo:** Falla
+- **Estado:** Resuelto
+- **Versión:** 2.4.0
+- **Síntoma:** "A current BCA is already on file" y "Driver accepted the terms in the STT app" aparecían con ✕ roja y "0 of 1", como si fueran un incumplimiento.
+- **Causa:** Internamente son el motivo para frenar el envío (estado `fail`), y el checklist los pintaba igual que un error.
+- **Solución:** En `app.html_checklist`, esos puntos del grupo Existing BCA se muestran con ✓ negra (cubierto) y cuentan como cumplidos. El veredicto sigue diciendo "Do not send".
+- **Cómo verificar:** En un caso con BCA vigente, el grupo Existing BCA dice "1 of 1".
+
+### B-021 · Excepción: el driver firmó los términos en la app de STT
+- **Fecha:** 2026-10-08
+- **Tipo:** Decisión
+- **Estado:** Vigente
+- **Versión:** 2.4.0
+- **Síntoma:** Hay drivers que ya firmaron por la app de STT. Pedirles una BCA nueva es innecesario.
+- **Causa:** Definido por Sofía. Aplica a la BCA y también a la verificación para enviar Load Confirmations, **aunque "Send To App" no esté marcado** en el Driver Assignment.
+- **Solución:**
+  - La app lee la sección **Driver Information** del Carrier Management Detail: POST `/Admin/Driver/DriverList?CarrierId=<id>`, que devuelve `Data` con `Id`, `Name`, `EmailID`, `TermsStatus` y `DriverStatus`.
+  - Busca al driver del Driver Assignment primero por su Id (el enlace `/Admin/Driver/DriverDetails/<id>` del Shipment) y, si no lo encuentra, por nombre.
+  - Si tiene **Terms Status = True**, el veredicto es "Do not send: signed in app" y no se revisan los PDF de BCA.
+  - Si tiene False o no aparece, se muestra como información y se sigue con la revisión normal de BCAs en los archivos.
+  - Si no se pudo leer Driver Information, la app sigue con la revisión normal.
+  - La lógica está en `stt_core.driver_firmo_en_app`, lista para reutilizarse cuando se construya la verificación de Load Confirmation.
+  - **Pendiente:** esta excepción no está escrita en la BCA Verification Policy v1.0. Conviene agregarla en la próxima versión (ver "Cómo publicar una nueva versión de una política" en el README).
+- **Cómo verificar:** Un Shipment cuyo driver tenga Terms Status True en el Carrier debe decir "Do not send: signed in app". Con S-039245 (Miguel Velarde, Terms Status False) la app sigue revisando los archivos.
 
 ### B-020 · Políticas publicadas en la app con control de versiones
 - **Fecha:** 2026-10-02
