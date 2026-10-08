@@ -18,7 +18,7 @@ import streamlit as st
 import stt_core as core
 
 RAIZ = Path(__file__).parent
-VERSION = "2.4.0"  # Cambiala en cada entrega y anotala en bitacora/REGISTRO.md
+VERSION = "2.4.1"  # Cambiala en cada entrega y anotala en bitacora/REGISTRO.md
 ZONA = ZoneInfo("America/Guatemala")
 
 st.set_page_config(page_title="STT BackOffice", page_icon=str(RAIZ / "assets" / "stt_icon.png"),
@@ -68,12 +68,14 @@ div[data-testid="stForm"]{border:1px solid var(--rule);border-radius:4px;backgro
   padding:30px 34px 28px;margin:22px 0 0;color:#fff}
 .verdict--ok{background:var(--ink)}
 .verdict--stop{background:var(--red)}
+.verdict--wait{background:#3A3F45}
 .v-stamp{font-family:'Barlow Condensed',sans-serif;font-style:italic;font-weight:800;
   font-size:clamp(38px,5.6vw,72px);line-height:.92;letter-spacing:-.5px;display:flex;align-items:center;gap:18px}
 .v-speed{flex:0 0 auto;width:clamp(40px,6vw,84px);height:.46em;transform:skewX(-14deg);
   background:repeating-linear-gradient(to bottom,var(--speed) 0 5px,transparent 5px 11px)}
 .verdict--ok{--speed:var(--go-bright)}
 .verdict--stop{--speed:#000}
+.verdict--wait{--speed:#F2B233}
 .v-sub{font-size:18px;margin-top:12px;max-width:62ch;opacity:.95}
 .v-code{border:1px solid rgba(255,255,255,.4);padding:14px 20px;min-width:250px}
 .v-code small{display:block;font-size:14px;opacity:.8}
@@ -316,6 +318,12 @@ def html_veredicto(r: core.ResultadoBCA, codigo: str | None, cuando: str) -> str
     ship = e(r.shipment["numero"] if r.shipment else f"S-{r.shipment_id:06d}")
     _, total = r.requisitos
     avisos = sum(c.estado == "warn" for c in r.checks)
+    if r.veredicto == "SIN_VERIFICAR":
+        titulo = "Could not finish the check"
+        sub = ("MOTUS did not respond to the app, so the carrier could not be verified and no code was issued. "
+               "This is not a problem with your request. Try again in a few minutes.")
+        return (f'<div class="verdict verdict--wait"><div><div class="v-stamp"><span class="v-speed"></span>'
+                f'<span>{titulo}</span></div><div class="v-sub">{sub}</div></div></div>')
     if r.veredicto == "AUTORIZADO":
         cls, titulo = "ok", "Approved to send"
         sub = f"The BCA request for {ship} meets all {total} requirements. You can now submit it to BackOffice."
@@ -352,6 +360,8 @@ def html_veredicto(r: core.ResultadoBCA, codigo: str | None, cuando: str) -> str
 
 def html_politicas(r: core.ResultadoBCA, gente: dict) -> str:
     """Banda de cumplimiento de políticas. Es genérica: la usará cualquier documento futuro."""
+    if r.veredicto == "SIN_VERIFICAR":
+        return ""   # sin MOTUS no se puede medir el cumplimiento; no es culpa del solicitante
     nivel, cumplidos, total = r.cumplimiento
     nombre = gente["saludo"]
     pendientes = len([c for c in r.fallas if c.grupo != core.GRUPO_BCA])
@@ -570,7 +580,8 @@ with tab_bca:
                 for r in resultados:
                     gente = personas(r, manual.strip())
                     codigo = core.nuevo_codigo(sid) if r.veredicto == "AUTORIZADO" else None
-                    aviso = guardar_en_registro(r, codigo, gente)
+                    # Si MOTUS no respondió no se registra: no es una solicitud frenada por el broker.
+                    aviso = None if r.veredicto == "SIN_VERIFICAR" else guardar_en_registro(r, codigo, gente)
                     paquete.append({"r": r, "codigo": codigo, "aviso": aviso, "gente": gente, "cuando": cuando})
                 st.session_state["bca"] = paquete
 
@@ -693,6 +704,9 @@ with tab_dot:
                 for dot in dots:
                     try:
                         data = motus(dot)
+                    except core.MotusNoDisponible as ex:
+                        filas.append({"USDOT": dot, "USDOT Status": f"MOTUS did not respond ({ex}). Try again in a few minutes."})
+                        continue
                     except requests.RequestException as ex:
                         filas.append({"USDOT": dot, "USDOT Status": f"Connection error: {ex}"})
                         continue
