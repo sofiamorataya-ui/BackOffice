@@ -1,5 +1,5 @@
 {
-  "_instrucciones": "Catálogo de políticas que muestra la app. La versión vigente es la PRIMERA de la lista 'versions'. Para publicar una versión nueva: subí el PDF nuevo a static/policies con otro nombre (nunca reemplaces el anterior), agregá la versión ARRIBA de la lista y anotá el cambio en bitacora/REGISTRO.md.",
+  "_instrucciones": "Catálogo de políticas que muestra la app. La versión vigente es la PRIMERA de la lista 'versions'. Para publicar una versión nueva: subí el PDF nuevo a static/policies con otro nombre (nunca reemplaces el anterior), agregá la versión ARRIBA de la lista y anotá el cambio en bitacora/REGISTRO.md. Una política sin versiones (lista vacía) se muestra en la app como 'documento en preparación'.",
   "BCA": {
     "title": "BCA Verification Policy",
     "document": "Verifying Information Before Sending a BCA",
@@ -12,5 +12,11 @@
         "changes": "First published version."
       }
     ]
+  },
+  "LC": {
+    "title": "Load Confirmation Verification Policy",
+    "document": "Load Confirmation verification procedure",
+    "owner": "BackOffice",
+    "versions": []
   }
 }
