@@ -6,6 +6,7 @@ Historial de versiones y entradas de la bitácora. La guía de uso y el diagnós
 
 | Versión | Fecha | Cambios | Entradas |
 |---|---|---|---|
+| 2.5.0 | 2026-10-08 | Nueva pestaña **Verify LC**: pre-verificación de Load Confirmation con Shipment Info, Special Instructions, Loads, pago (y plantilla de LC), truck, Driver Assignment, Carrier, MOTUS, BCA, COI, licencia y driver de la app. Lo de la Orden y el SA queda como revisión manual. Códigos `LC-` y estadísticas por documento. | B-024, B-025, B-026 |
 | 2.4.1 | 2026-10-08 | La consulta a MOTUS abre primero la página pública, reintenta 3 veces y, si MOTUS no responde, muestra "Could not finish the check" en lugar de un error técnico. Esos casos no se registran como solicitudes frenadas. | B-023 |
 | 2.4.0 | 2026-10-08 | Excepción: si el driver del Driver Assignment tiene Terms Status True en Driver Information del Carrier, firmó en la app y no se pide BCA nueva. Las BCAs ya cubiertas se ven como "cubierto" y no como error. | B-021, B-022 |
 | 2.3.0 | 2026-10-02 | Corrige la regla de BCA previa: con MC activo se busca el MC# en la BCA, no el DOT#. Mensajes de BCA previa más claros, con enlace al archivo. Política de BCA publicada en la app con versión, fecha e historial. Cada verificación guarda la versión de política aplicada. | B-014, B-019, B-020 |
@@ -17,6 +18,56 @@ Historial de versiones y entradas de la bitácora. La guía de uso y el diagnós
 | 1.0.0 | 2026-09-30 | Validador de USDOT contra MOTUS (uno o varios DOT). | B-001 a B-005 |
 
 ## Entradas
+
+### B-026 · Pendiente para automatizar el resto de la LC
+- **Fecha:** 2026-10-08
+- **Tipo:** Hallazgo
+- **Estado:** Pendiente
+- **Versión:** 2.5.0
+- **Síntoma:** Varias reglas del procedimiento de LC dependen de páginas del CRM que la app todavía no conoce. Hoy aparecen en el grupo "BackOffice reviews manually".
+- **Qué falta y qué se necesita:**
+  - **Estado de la Orden, SA firmado y override por SA sin firmar:** guardar con Ctrl+S la página de la Orden (por ejemplo `/Admin/Orders/Details/76869`, la de S-039245) y un SA firmado de ejemplo.
+  - **Montos de la Orden** (Carrier Pay de Payment Details, Customer Pays Carrier On Drop Off, OTR Pays Carrier): misma página de la Orden.
+  - **Direcciones contra la Orden y el SA, y Special Terms:** misma página de la Orden.
+  - **Load repetida en otro shipment de la misma Orden:** misma página de la Orden.
+  - **Override aprobado:** guardar el detalle de un request de Override real, para saber cómo se ve aprobado o rechazado. Hoy la app reconoce un override porque el tipo o el documento dice "Override".
+  - **COI:** un COI real en PDF, para afinar la lectura de nombre, dirección, holder, coberturas y vencimiento.
+  - **Contacto del broker:** el email y teléfono del Shipment Owner y del Dispatcher están en su perfil (`/Admin/Customer/Details/<id>`); con una página de ejemplo se puede comparar exacto en lugar de por nombre.
+- **Cómo verificar:** Cuando se automatice cada punto, sale del grupo "BackOffice reviews manually" y pasa a su grupo con ✓ o ✕.
+
+### B-025 · El procedimiento de LC contiene información confidencial
+- **Fecha:** 2026-10-08
+- **Tipo:** Decisión
+- **Estado:** Vigente
+- **Versión:** 2.5.0
+- **Síntoma:** El PDF del procedimiento de Load Confirmation nombra a un cliente con crédito interno que no necesita override aunque el SA no esté firmado, y pide expresamente no divulgarlo.
+- **Causa:** Todo lo que está en `static/` se puede abrir desde la app, y el repo de GitHub puede verlo cualquiera con acceso.
+- **Solución:**
+  - El PDF de LC **no se publica** en la app. En `politicas.json`, LC está sin versiones y la app muestra "The official document is being prepared by BackOffice".
+  - El nombre del cliente **no se escribe** en el código, en la bitácora ni en la app.
+  - Cuando se automatice la regla del SA (B-026), el nombre irá en los secrets de Streamlit (por ejemplo `LC_CLIENTES_SIN_OVERRIDE_SA`), que no se ven en el repo.
+  - Para publicar la política de LC hace falta una versión en inglés, sin el cliente confidencial, aprobada por Sofía.
+- **Cómo verificar:** Buscar el nombre del cliente en el repo: no debe aparecer en ningún archivo.
+
+### B-024 · Pre-verificación de Load Confirmation (versión 1)
+- **Fecha:** 2026-10-08
+- **Tipo:** Decisión
+- **Estado:** Vigente
+- **Versión:** 2.5.0
+- **Síntoma:** BackOffice recibe pedidos de LC con información incompleta, igual que pasaba con la BCA.
+- **Causa:** Procedimiento "Load Confirmation" entregado por Sofía el 2026-10-08.
+- **Solución:** Pestaña **Verify LC**, con la lógica en `stt_core.evaluar_lc`. Reglas automáticas:
+  - **Shipment info:** Estimated Pick-up y Estimated Delivery completos.
+  - **Special Instructions:** las fechas de pick-up y delivery son iguales a las de Shipment Info. El nombre y el teléfono del driver coinciden con el Driver Assignment. Hay email y teléfono del broker o dispatcher, y el email corresponde al Shipment Owner o al Dispatcher, o a Calvin si el Supervisor es Candi Fuentes, o a Gabriela Salazar si el Supervisor es Ron Sanchez. Si no se reconoce el nombre en el email, queda en amarillo para que BackOffice lo confirme. Si mencionan un tipo de camión, debe ser el de Truck Specifications.
+  - **Loads:** al menos una. Por cada load: Load Type y Quantity; Make y Model; si el tipo es pallets o crates, la descripción debe decirlo; año si tiene motor (vehicle, truck, boat, equipment, machinery, etc.); Length, Width, Height y Weight excepto vehículos; los contenedores deben decir Empty YES o NO y, si van cargados, qué llevan; Hitch debe indicar el tipo.
+  - **Payment:** el tipo de pago decide la plantilla (Pay by Broker = LoadConfirmation.BB, COD = .COD, OTR = .OTR, Joint = .JL). Pay by Broker: Carrier Pay igual a Broker Pays Carrier. COD y OTR: solo Carrier Pay. Joint: Carrier Pay es el total y Broker Pays Carrier es menor. COD exige un override en Requests. Si el Shipment es International, debe ser Pay by Broker.
+  - **Driver Assignment, Carrier, MOTUS y ruta:** las mismas reglas que la BCA, más el teléfono del driver, que es obligatorio.
+  - **Carrier documents:** BCA firmada y vigente (o Terms Status True en la app, B-021); COI con el nombre legal, dirección de MOTUS (física o de correo), cobertura según el camión (Cargo/Motor Truck Cargo; Automobile Liability para car hauler; Drive Away; On Hook o Cargo para power only) y vigencia de al menos 10 días después de la entrega; si la dirección no coincide, STT debe ser el certificate holder; licencia del driver, o el archivo "Driver License Alternative".
+  - **STT app driver** (Send To App marcado): el driver aparece en Driver Information con DOT Status, Stripe Status y Terms Status positivos y Driver Status Approved. Para estos drivers la licencia no es obligatoria.
+  - **BackOffice reviews manually:** estado de la Orden y SA, montos de la Orden, direcciones contra la Orden y el SA, load repetida, COI original y firmado, licencia legible y dispatcher externo (ver B-026).
+  - Datos nuevos del CRM: loads del Shipment por POST `/Admin/Order/OrderLoadList?OrderId=<shipmentId>` (`LoadId`, `LoadNumber`) y detalle en `/Admin/Loads/Details/<id>`; Requests, Special Instructions, Payment Type, Carrier Pay, Broker Pays Carrier, Truck Type, Supervisor e International vienen en la página del Shipment.
+  - **Supuestos para confirmar con Sofía:** qué tipos de load cuentan como "con motor"; qué valores son positivos en DOT Status y Stripe Status (la app acepta True, Approved, Active, Verified, Valid, Complete, Yes y Connected); y qué plantillas son LoadConfirmation.CC y .COP.
+- **Cómo verificar:** Probado con las páginas reales de S-039245 (sale aprobado, con LoadConfirmation.OTR) y con 22 escenarios: pagos, fechas, driver distinto, camión distinto, loads incompletas, contenedores, sin BCA, BCA firmada en la app, COI vencido o con otra dirección, sin licencia, driver de app y MOTUS caído.
 
 ### B-023 · MOTUS rechaza las consultas desde Streamlit Cloud (error 403)
 - **Fecha:** 2026-10-08
