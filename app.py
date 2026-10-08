@@ -18,7 +18,7 @@ import streamlit as st
 import stt_core as core
 
 RAIZ = Path(__file__).parent
-VERSION = "2.4.1"  # Cambiala en cada entrega y anotala en bitacora/REGISTRO.md
+VERSION = "2.5.0"  # Cambiala en cada entrega y anotala en bitacora/REGISTRO.md
 ZONA = ZoneInfo("America/Guatemala")
 
 st.set_page_config(page_title="STT BackOffice", page_icon=str(RAIZ / "assets" / "stt_icon.png"),
@@ -140,6 +140,8 @@ div[data-testid="stForm"]{border:1px solid var(--rule);border-radius:4px;backgro
 .ticket dd{margin:0;font-weight:600}
 
 .pie{margin-top:48px;padding-top:12px;border-top:1px solid var(--rule);color:var(--muted);font-size:13.5px}
+h3.sub{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:22px;margin:22px 0 2px;padding:0}
+.bars-h{font-weight:600;color:var(--muted);margin:18px 0 2px}
 h2.sec{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:26px;margin:30px 0 4px;padding:0}
 
 /* Banda de cumplimiento de políticas (verde / amarillo / rojo) */
@@ -277,9 +279,12 @@ def fecha_larga(iso: str) -> str:
     return f"{d:%B} {d.day}, {d.year}"
 
 
-def politica(clave: str) -> dict:
-    """Versión vigente de una política (la primera de la lista), con su URL pública."""
-    p = catalogo_politicas()[clave]
+def politica(clave: str) -> dict | None:
+    """Versión vigente de una política (la primera de la lista), con su URL pública.
+    None si todavía no hay un documento publicado."""
+    p = catalogo_politicas().get(clave)
+    if not p or not p.get("versions"):
+        return None
     v = p["versions"][0]
     return {**p, **v, "url": f"./app/static/{v['file']}", "fecha": fecha_larga(v["effective"]),
             "etiqueta": f"{p['title']} v{v['version']}"}
@@ -292,7 +297,7 @@ def plural(n: int, singular: str, plural_: str | None = None) -> str:
 # ============================================================
 # Quién pide la solicitud
 # ============================================================
-def personas(r: core.ResultadoBCA, manual: str) -> dict:
+def personas(r, manual: str) -> dict:
     s = r.shipment or {}
     owner, dispatcher = (s.get("owner") or "").strip(), (s.get("dispatcher") or "").strip()
     if manual:
@@ -314,7 +319,41 @@ def personas(r: core.ResultadoBCA, manual: str) -> dict:
 # ============================================================
 # Piezas de la pantalla de resultado
 # ============================================================
-def html_veredicto(r: core.ResultadoBCA, codigo: str | None, cuando: str) -> str:
+# Configuración de cada documento que la app pre-verifica
+DOCS = {
+    "BCA": {
+        "corto": "BCA", "largo": "BCA", "pestana": "Verify BCA", "boton": "Verify BCA",
+        "spinner": "Checking the shipment, Driver Assignment, carrier, and MOTUS…",
+        "procedimiento": "BackOffice's BCA verification procedure",
+        "requisitos_rojo": "verified driver, carrier, and route information",
+        "intro": "Enter the shipment number before you request a BCA. The app checks the Driver Assignment, the "
+                 "carrier, and MOTUS using the same procedure BackOffice follows, then tells you whether you can "
+                 "submit the request or what to fix first.",
+        "pasos": [("Driver Assignment", "Driver assigned, Dispatched, and with an email"),
+                  ("Carrier", "Company name, DOT, MC, and address complete"),
+                  ("MOTUS", "Active USDOT and MC, with identical name and Principal Place of Business"),
+                  ("Route", "Without an active MC, the load cannot leave the state"),
+                  ("Existing BCA", "If a signed, current BCA is on file, or the driver accepted the terms in the STT app, no new one is sent")],
+    },
+    "LC": {
+        "corto": "LC", "largo": "Load Confirmation", "pestana": "Verify LC", "boton": "Verify LC",
+        "spinner": "Checking the shipment, loads, payment, Driver Assignment, carrier documents, and MOTUS…",
+        "procedimiento": "BackOffice's Load Confirmation procedure",
+        "requisitos_rojo": "complete shipment, load, payment, driver, and carrier information",
+        "intro": "Enter the shipment number before you request a Load Confirmation. The app checks Shipment Info, "
+                 "Special Instructions, the loads, the payment, the Driver Assignment, the carrier's documents, and "
+                 "MOTUS, then tells you whether you can submit the request or what to fix first.",
+        "pasos": [("Shipment and Special Instructions", "Dates, driver name and phone, and broker contact match"),
+                  ("Loads", "Type, quantity, description, year, and dimensions complete"),
+                  ("Payment", "Amounts match the payment type, which decides the LC template"),
+                  ("Driver and carrier", "Same checks as the BCA, plus the driver's phone"),
+                  ("Documents", "Signed BCA (or terms accepted in the app), valid COI, and driver's license")],
+    },
+}
+
+
+def html_veredicto(r, codigo: str | None, cuando: str) -> str:
+    cfg = DOCS[r.documento]
     ship = e(r.shipment["numero"] if r.shipment else f"S-{r.shipment_id:06d}")
     _, total = r.requisitos
     avisos = sum(c.estado == "warn" for c in r.checks)
@@ -326,11 +365,14 @@ def html_veredicto(r: core.ResultadoBCA, codigo: str | None, cuando: str) -> str
                 f'<span>{titulo}</span></div><div class="v-sub">{sub}</div></div></div>')
     if r.veredicto == "AUTORIZADO":
         cls, titulo = "ok", "Approved to send"
-        sub = f"The BCA request for {ship} meets all {total} requirements. You can now submit it to BackOffice."
+        sub = (f"The {cfg['largo']} request for {ship} meets all {total} automatic checks. "
+               "You can now submit it to BackOffice.")
         if avisos == 1:
             sub += " BackOffice will review the item marked in yellow."
         elif avisos > 1:
             sub += f" BackOffice will review the {avisos} items marked in yellow."
+        if any(c.grupo == core.GRUPO_MANUAL for c in r.checks):
+            sub += " BackOffice still reviews the items listed under “BackOffice reviews manually.”"
     elif r.veredicto == "YA_EXISTE":
         if r.terminos_app:
             cls, titulo = "stop", "Do not send: signed in app"
@@ -345,9 +387,9 @@ def html_veredicto(r: core.ResultadoBCA, codigo: str | None, cuando: str) -> str
         cls, titulo = "stop", "Not ready to send"
         cumplidos, total_req = r.cumplimiento[1], r.cumplimiento[2]
         if n == 1:
-            sub = f"1 item must be fixed before the BCA on {ship} can be sent. Fix it in the CRM and verify again."
+            sub = f"1 item must be fixed before the {cfg['largo']} on {ship} can be sent. Fix it in the CRM and verify again."
         else:
-            sub = f"{n} items must be fixed before the BCA on {ship} can be sent. Fix them in the CRM and verify again."
+            sub = f"{n} items must be fixed before the {cfg['largo']} on {ship} can be sent. Fix them in the CRM and verify again."
         if total_req - cumplidos > n:
             sub += " The remaining requirements will be checked once these are fixed."
     caja = ""
@@ -358,10 +400,11 @@ def html_veredicto(r: core.ResultadoBCA, codigo: str | None, cuando: str) -> str
             f'<span>{titulo}</span></div><div class="v-sub">{sub}</div></div>{caja}</div>')
 
 
-def html_politicas(r: core.ResultadoBCA, gente: dict) -> str:
-    """Banda de cumplimiento de políticas. Es genérica: la usará cualquier documento futuro."""
+def html_politicas(r, gente: dict) -> str:
+    """Banda de cumplimiento de políticas. Es genérica para todos los documentos."""
     if r.veredicto == "SIN_VERIFICAR":
         return ""   # sin MOTUS no se puede medir el cumplimiento; no es culpa del solicitante
+    cfg = DOCS[r.documento]
     nivel, cumplidos, total = r.cumplimiento
     nombre = gente["saludo"]
     pendientes = len([c for c in r.fallas if c.grupo != core.GRUPO_BCA])
@@ -381,20 +424,22 @@ def html_politicas(r: core.ResultadoBCA, gente: dict) -> str:
     elif nivel == "yellow":
         titulo = "Partially compliant"
         texto = (f"{inicio} request is partially complete. Under STT's document policies and standard operating "
-                 "procedures, a BCA request must include complete and accurate information before it is "
+                 f"procedures, a {cfg['largo']} request must include complete and accurate information before it is "
                  f"submitted. {plural(pendientes, 'item')} still {'needs' if pendientes == 1 else 'need'} "
                  "your attention. Once you correct them in the CRM and verify again, you will receive your "
                  "pre-verification code right away.")
     else:
         titulo = "Not compliant"
         texto = (f"{inicio} request does not meet STT's document requirements. Company policy and our standard "
-                 "operating procedures require every BCA request to include verified driver, carrier, and route "
-                 "information before it reaches BackOffice. Requests submitted without it are returned, which "
+                 f"operating procedures require every {cfg['largo']} request to include {cfg['requisitos_rojo']} "
+                 "before it reaches BackOffice. Requests submitted without it are returned, which "
                  "delays the load for you, your customer, and the carrier. Please complete the items below before "
                  "submitting. If anything is unclear, BackOffice is glad to help.")
 
-    pol = politica("BCA")
-    if nivel == "green":
+    pol = politica(r.documento)
+    if pol is None:
+        enlace_politica = f"Every requirement comes from {cfg['procedimiento']}."
+    elif nivel == "green":
         enlace_politica = (f'You can review the <a href="{pol["url"]}" target="_blank">{e(pol["title"])}</a> '
                            f'(updated {pol["fecha"]}) at any time.')
     else:
@@ -407,7 +452,7 @@ def html_politicas(r: core.ResultadoBCA, gente: dict) -> str:
             f'<p>{texto} {enlace_politica}</p></div>')
 
 
-def html_datos(r: core.ResultadoBCA, gente: dict, cuando: str) -> str:
+def html_datos(r, gente: dict, cuando: str) -> str:
     s, a, c = r.shipment or {}, r.asignacion or {}, r.carrier or {}
     origen = ", ".join(x for x in [s.get("origen_ciudad"), s.get("origen_estado")] if x)
     destino = ", ".join(x for x in [s.get("destino_ciudad"), s.get("destino_estado")] if x)
@@ -430,29 +475,41 @@ def html_datos(r: core.ResultadoBCA, gente: dict, cuando: str) -> str:
     ]
     fila = lambda items, extra="": f'<div class="facts {extra}">' + "".join(
         f'<div class="fact"><span>{e(k)}</span><b>{e(v)}</b></div>' for k, v in items) + "</div>"
-    return fila(datos) + fila(gente_datos, "facts--people")
+    html_ = fila(datos) + fila(gente_datos, "facts--people")
+    if r.documento == "LC" and r.shipment:
+        html_ += fila([
+            ("LC to send", r.plantilla or "Unknown"),
+            ("Payment type", s.get("pago_tipo") or "Not set"),
+            ("Case", r.caso),
+            ("Loads", ", ".join(l.get("numero", "") for l in r.loads) or "None"),
+        ], "facts--people")
+    return html_
 
 
-def html_acciones(r: core.ResultadoBCA) -> str:
+def html_acciones(r) -> str:
     if not r.fallas:
         return ""
+    cfg = DOCS[r.documento]
     items = []
     for c in r.fallas:
         link = f'<a href="{e(c.link)}" target="_blank">{e(c.link_texto)}</a>' if c.link else ""
         items.append(f"<li>{e(c.solucion or c.detalle)}{link}</li>")
     titulo = "What to do" if r.veredicto == "YA_EXISTE" else "To send this request"
-    pol = politica("BCA")
-    ref = (f'<div class="pol-ref">Based on the <a href="{pol["url"]}" target="_blank">{e(pol["title"])}</a>, '
-           f'version {e(pol["version"])}, updated {pol["fecha"]}.</div>')
+    pol = politica(r.documento)
+    if pol:
+        ref = (f'<div class="pol-ref">Based on the <a href="{pol["url"]}" target="_blank">{e(pol["title"])}</a>, '
+               f'version {e(pol["version"])}, updated {pol["fecha"]}.</div>')
+    else:
+        ref = f'<div class="pol-ref">Based on {cfg["procedimiento"]}.</div>'
     return f'<div class="acciones"><h3>{titulo}</h3>{ref}<ol>{"".join(items)}</ol></div>'
 
 
 MARCAS = {"ok": "✓", "fail": "✕", "warn": "!", "info": "–", "covered": "✓"}
 
 
-def html_checklist(r: core.ResultadoBCA) -> str:
+def html_checklist(r) -> str:
     partes = []
-    for g in core.ORDEN_GRUPOS:
+    for g in r.grupos:
         cs = [c for c in r.checks if c.grupo == g]
         if not cs:
             continue
@@ -467,18 +524,21 @@ def html_checklist(r: core.ResultadoBCA) -> str:
                 link = f'<a href="{e(c.link)}" target="_blank">{e(c.link_texto)}</a>' if c.link else ""
                 nota = f'<div class="chk-note">{e(c.solucion)}{link}</div>'
             enlace = ""
-            if c.estado in ("ok", "info") and c.link:
+            # En filas correctas solo se enlazan documentos (BCA, COI, Driver Information), no páginas genéricas.
+            if c.estado in ("ok", "info") and c.link and re.search(r"BCA|COI|Driver Information", c.link_texto):
                 enlace = f' <a href="{e(c.link)}" target="_blank">{e(c.link_texto)}</a>'
             visual = "covered" if cubierto(c) else c.estado
             filas.append(
                 f'<div class="chk chk--{visual}"><div class="mark mark--{visual}">{MARCAS[visual]}</div>'
                 f'<div><div class="chk-t">{e(c.titulo)}</div><div class="chk-d">{e(c.detalle)}{enlace}</div>{nota}</div></div>')
         resumen = f"{bien} of {len(evaluados)}" if evaluados else ""
+        if g == core.GRUPO_MANUAL:
+            resumen = "Not automated yet"
         partes.append(f'<div class="grp"><div class="grp-h"><b>{e(g)}</b><span>{resumen}</span></div>{"".join(filas)}</div>')
     return "".join(partes)
 
 
-def html_comparacion(r: core.ResultadoBCA) -> str:
+def html_comparacion(r) -> str:
     c, m = r.carrier, r.motus
     if not c or not m:
         return ""
@@ -503,13 +563,14 @@ def html_comparacion(r: core.ResultadoBCA) -> str:
     return f'<div class="cmp"><div class="cmp-h">CRM vs. MOTUS</div>{"".join(filas)}{links}</div>'
 
 
-def guardar_en_registro(r: core.ResultadoBCA, codigo: str | None, gente: dict) -> str | None:
+def guardar_en_registro(r, codigo: str | None, gente: dict) -> str | None:
     reg = registro()
     if not reg.activo:
         return None
+    pol = politica(r.documento)
     try:
         reg.guardar({
-            "documento": "BCA",
+            "documento": r.documento,
             "shipment": (r.shipment or {}).get("numero") or f"S-{r.shipment_id:06d}",
             "driver_assignment": (r.asignacion or {}).get("da_nombre"),
             "carrier": (r.carrier or {}).get("nombre"),
@@ -519,7 +580,7 @@ def guardar_en_registro(r: core.ResultadoBCA, codigo: str | None, gente: dict) -
             "cumplimiento": r.cumplimiento[0],
             "codigo": codigo,
             "motivos": [c.titulo for c in r.fallas],
-            "politica_version": politica("BCA")["etiqueta"],
+            "politica_version": pol["etiqueta"] if pol else DOCS[r.documento]["procedimiento"],
             "shipment_owner": gente["owner"] or None,
             "dispatcher": gente["dispatcher"] or None,
             "solicitado_por": gente["solicitante"] or None,
@@ -529,34 +590,44 @@ def guardar_en_registro(r: core.ResultadoBCA, codigo: str | None, gente: dict) -
     return None
 
 
-# ============================================================
-# Pestañas
-# ============================================================
-tab_bca, tab_bo, tab_dot = st.tabs(["Verify BCA", "Validate code", "USDOT lookup"])
-
-# ---------------- Verify BCA ----------------
-with tab_bca:
-    pol = politica("BCA")
+def barra_politica(doc: str) -> None:
+    pol = politica(doc)
+    cfg = DOCS[doc]
+    if pol is None:
+        st.markdown(
+            '<div class="pol"><div class="pol-doc" aria-hidden="true"></div>'
+            f'<div class="pol-txt"><b>{e(cfg["largo"])} Verification Policy</b>'
+            f'<span>The official document is being prepared by BackOffice. Until it is published, the app applies '
+            f'{cfg["procedimiento"]}.</span></div></div>', unsafe_allow_html=True)
+        return
     st.markdown(
         '<div class="pol"><div class="pol-doc" aria-hidden="true"></div>'
         f'<div class="pol-txt"><b>{e(pol["title"])}</b>'
-        f'<span>Version {e(pol["version"])}, updated {pol["fecha"]}. This is the policy the app applies to every BCA request.</span></div>'
+        f'<span>Version {e(pol["version"])}, updated {pol["fecha"]}. This is the policy the app applies to every '
+        f'{cfg["largo"]} request.</span></div>'
         f'<a class="pol-btn" href="{pol["url"]}" target="_blank">Open policy (PDF)</a></div>',
         unsafe_allow_html=True)
     with st.expander("Policy revision history"):
         filas_hist = "".join(
             f'<tr><td>{e(v["version"])}</td><td>{fecha_larga(v["effective"])}</td><td>{e(v["changes"])}</td>'
             f'<td><a href="./app/static/{e(v["file"])}" target="_blank">PDF</a></td></tr>'
-            for v in catalogo_politicas()["BCA"]["versions"])
+            for v in catalogo_politicas()[doc]["versions"])
         st.markdown('<table class="hist"><thead><tr><th>Version</th><th>Effective</th><th>What changed</th>'
                     f'<th>File</th></tr></thead><tbody>{filas_hist}</tbody></table>', unsafe_allow_html=True)
         st.caption("The first row is the current version. Earlier versions stay available for reference.")
-    with st.form("form_bca", border=True):
+
+
+def pantalla_verificacion(doc: str) -> None:
+    """Pestaña completa de pre-verificación de un documento (BCA o LC)."""
+    cfg = DOCS[doc]
+    barra_politica(doc)
+    with st.form(f"form_{doc}", border=True):
         c1, c2, c3 = st.columns([2, 2, 1.2], vertical_alignment="bottom")
-        texto_ship = c1.text_input("Shipment", placeholder="S-039981")
+        texto_ship = c1.text_input("Shipment", placeholder="S-039981", key=f"ship_{doc}")
         manual = c2.text_input("Requested by (optional)", placeholder="Only if not the Shipment Owner or Dispatcher",
-                               help="Leave blank and the app uses the Shipment Owner and Dispatcher from the CRM.")
-        verificar = c3.form_submit_button("Verify BCA", type="primary", use_container_width=True)
+                               help="Leave blank and the app uses the Shipment Owner and Dispatcher from the CRM.",
+                               key=f"quien_{doc}")
+        verificar = c3.form_submit_button(cfg["boton"], type="primary", use_container_width=True)
 
     if verificar:
         sid = numero_shipment(texto_ship)
@@ -565,9 +636,10 @@ with tab_bca:
         elif "STT_EMAIL" not in st.secrets or "STT_PASSWORD" not in st.secrets:
             st.error("The app is not set up to access the CRM. STT_EMAIL and STT_PASSWORD are missing from the secrets.")
         else:
+            funcion = core.pre_verificar_bca if doc == "BCA" else core.pre_verificar_lc
             try:
-                with st.spinner("Checking the shipment, Driver Assignment, carrier, and MOTUS…"):
-                    resultados = core.pre_verificar_bca(crm_compartido(), sid, motus_fn=motus)
+                with st.spinner(cfg["spinner"]):
+                    resultados = funcion(crm_compartido(), sid, motus_fn=motus)
             except core.CRMError as ex:
                 st.error(str(ex))
                 resultados = None
@@ -579,55 +651,56 @@ with tab_bca:
                 paquete = []
                 for r in resultados:
                     gente = personas(r, manual.strip())
-                    codigo = core.nuevo_codigo(sid) if r.veredicto == "AUTORIZADO" else None
+                    codigo = core.nuevo_codigo(sid, doc) if r.veredicto == "AUTORIZADO" else None
                     # Si MOTUS no respondió no se registra: no es una solicitud frenada por el broker.
                     aviso = None if r.veredicto == "SIN_VERIFICAR" else guardar_en_registro(r, codigo, gente)
                     paquete.append({"r": r, "codigo": codigo, "aviso": aviso, "gente": gente, "cuando": cuando})
-                st.session_state["bca"] = paquete
+                st.session_state[f"res_{doc}"] = paquete
 
-    paquete = st.session_state.get("bca")
+    paquete = st.session_state.get(f"res_{doc}")
     if not paquete:
-        st.markdown(
-            '<p class="intro">Enter the shipment number before you request a BCA. The app checks the Driver '
-            'Assignment, the carrier, and MOTUS using the same procedure BackOffice follows, then tells you '
-            'whether you can submit the request or what to fix first.</p>'
-            '<div class="pasos">'
-            '<div class="paso"><b>Driver Assignment</b><span>Driver assigned, Dispatched, and with an email</span></div>'
-            '<div class="paso"><b>Carrier</b><span>Company name, DOT, MC, and address complete</span></div>'
-            '<div class="paso"><b>MOTUS</b><span>Active USDOT and MC, with identical name and Principal Place of Business</span></div>'
-            '<div class="paso"><b>Route</b><span>Without an active MC, the load cannot leave the state</span></div>'
-            '<div class="paso"><b>Existing BCA</b><span>If a signed, current BCA is on file, or the driver accepted the terms in the STT app, no new one is sent</span></div>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-    else:
-        for item in paquete:
-            r, gente = item["r"], item["gente"]
-            st.markdown(html_veredicto(r, item["codigo"], item["cuando"]) + html_politicas(r, gente)
-                        + html_datos(r, gente, item["cuando"]) + html_acciones(r), unsafe_allow_html=True)
-            if item["aviso"]:
-                st.warning(item["aviso"])
-            if item["codigo"] and not registro().activo:
-                st.caption("The code log isn't set up yet, so BackOffice can't validate this code in the app.")
-            izq, der = st.columns([3, 2], gap="large")
-            izq.markdown(html_checklist(r), unsafe_allow_html=True)
-            der.markdown(html_comparacion(r), unsafe_allow_html=True)
-            st.write("")
+        pasos = "".join(f'<div class="paso"><b>{e(t)}</b><span>{e(d)}</span></div>' for t, d in cfg["pasos"])
+        st.markdown(f'<p class="intro">{e(cfg["intro"])}</p><div class="pasos">{pasos}</div>', unsafe_allow_html=True)
+        return
+    for item in paquete:
+        r, gente = item["r"], item["gente"]
+        st.markdown(html_veredicto(r, item["codigo"], item["cuando"]) + html_politicas(r, gente)
+                    + html_datos(r, gente, item["cuando"]) + html_acciones(r), unsafe_allow_html=True)
+        if item["aviso"]:
+            st.warning(item["aviso"])
+        if item["codigo"] and not registro().activo:
+            st.caption("The code log isn't set up yet, so BackOffice can't validate this code in the app.")
+        izq, der = st.columns([3, 2], gap="large")
+        izq.markdown(html_checklist(r), unsafe_allow_html=True)
+        der.markdown(html_comparacion(r), unsafe_allow_html=True)
+        st.write("")
+
+
+# ============================================================
+# Pestañas
+# ============================================================
+tab_bca, tab_lc, tab_bo, tab_dot = st.tabs(["Verify BCA", "Verify LC", "Validate code", "USDOT lookup"])
+
+with tab_bca:
+    pantalla_verificacion("BCA")
+
+with tab_lc:
+    pantalla_verificacion("LC")
 
 # ---------------- Validate code (BackOffice) ----------------
 with tab_bo:
     reg = registro()
     with st.form("form_codigo", border=True):
         c1, c2 = st.columns([3, 1.2], vertical_alignment="bottom")
-        codigo_in = c1.text_input("Pre-verification code", placeholder="BCA-39981-K7QM")
+        codigo_in = c1.text_input("Pre-verification code", placeholder="BCA-39981-K7QM or LC-39981-K7QM")
         buscar = c2.form_submit_button("Validate code", type="primary", use_container_width=True)
 
     if buscar:
         cod = codigo_in.strip().upper()
         if not reg.activo:
             st.error("The code log is not set up. Add SUPABASE_URL and SUPABASE_KEY to the secrets.")
-        elif not re.fullmatch(r"BCA-\d+-[A-Z0-9]{4}", cod):
-            st.error("Codes use this format: BCA-39981-K7QM.")
+        elif not re.fullmatch(r"(BCA|LC)-\d+-[A-Z0-9]{4}", cod):
+            st.error("Codes use this format: BCA-39981-K7QM or LC-39981-K7QM.")
         else:
             try:
                 fila = reg.buscar(cod)
@@ -646,6 +719,7 @@ with tab_bo:
                     st.markdown(
                         '<div class="ticket"><div class="ticket-h" style="background:var(--ink)">Valid code</div><dl>'
                         f'<dt>Code</dt><dd>{e(fila["codigo"])}</dd>'
+                        f'<dt>Document</dt><dd>{e(DOCS.get(fila.get("documento"), {}).get("largo", fila.get("documento") or ""))}</dd>'
                         f'<dt>Shipment</dt><dd>{e(fila.get("shipment") or "")}</dd>'
                         f'<dt>Driver Assignment</dt><dd>{e(fila.get("driver_assignment") or "")}</dd>'
                         f'<dt>Carrier</dt><dd>{e(fila.get("carrier") or "")}</dd>'
@@ -658,34 +732,35 @@ with tab_bo:
                         '</dl></div>',
                         unsafe_allow_html=True)
                     st.caption("The code confirms everything was in order at the time of verification. "
-                               "If time has passed, verify the shipment again on the Verify BCA tab.")
+                               "If time has passed, verify the shipment again on the Verify BCA or Verify LC tab.")
 
     st.markdown('<h2 class="sec">Last 30 days</h2>', unsafe_allow_html=True)
     if not reg.activo:
-        st.caption("Once the Supabase log is set up, this section shows how many BCA requests were stopped "
+        st.caption("Once the Supabase log is set up, this section shows how many requests were stopped "
                    "before reaching BackOffice, and why.")
     else:
-        try:
-            filas = reg.recientes(30)
-        except requests.RequestException as ex:
-            st.error(f"Could not read the code log: {ex}")
-            filas = []
-        total = len(filas)
-        frenadas = sum(f["resultado"] != "AUTORIZADO" for f in filas)
-        st.markdown(
-            '<div class="kpis">'
-            f'<div class="kpi"><b>{total:,}</b><span>BCA verifications</span></div>'
-            f'<div class="kpi kpi--stop"><b>{frenadas:,}</b><span>Stopped before reaching BackOffice</span></div>'
-            f'<div class="kpi"><b>{total - frenadas:,}</b><span>Approved to send</span></div>'
-            '</div>', unsafe_allow_html=True)
-        motivos = Counter(m for f in filas for m in (f.get("motivos") or []))
-        if motivos:
-            maximo = max(motivos.values())
-            barras = "".join(
-                f'<div class="bar"><span>{e(m)}</span><div style="width:{100 * n / maximo:.0f}%"></div><em>{n:,}</em></div>'
-                for m, n in motivos.most_common(8))
-            st.markdown(f'<h2 class="sec">Most common reasons</h2><div class="bars">{barras}</div>',
-                        unsafe_allow_html=True)
+        for doc in DOCS:
+            try:
+                filas = reg.recientes(30, doc)
+            except requests.RequestException as ex:
+                st.error(f"Could not read the code log: {ex}")
+                filas = []
+            total = len(filas)
+            frenadas = sum(f["resultado"] != "AUTORIZADO" for f in filas)
+            st.markdown(
+                f'<h3 class="sub">{e(DOCS[doc]["largo"])}</h3><div class="kpis">'
+                f'<div class="kpi"><b>{total:,}</b><span>Verifications</span></div>'
+                f'<div class="kpi kpi--stop"><b>{frenadas:,}</b><span>Stopped before reaching BackOffice</span></div>'
+                f'<div class="kpi"><b>{total - frenadas:,}</b><span>Approved to send</span></div>'
+                '</div>', unsafe_allow_html=True)
+            motivos = Counter(m for f in filas for m in (f.get("motivos") or []))
+            if motivos:
+                maximo = max(motivos.values())
+                barras = "".join(
+                    f'<div class="bar"><span>{e(m)}</span><div style="width:{100 * n / maximo:.0f}%"></div><em>{n:,}</em></div>'
+                    for m, n in motivos.most_common(8))
+                st.markdown(f'<div class="bars-h">Most common reasons</div><div class="bars">{barras}</div>',
+                            unsafe_allow_html=True)
 
 # ---------------- USDOT lookup ----------------
 with tab_dot:
