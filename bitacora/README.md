@@ -26,6 +26,7 @@ La bitácora tiene dos archivos:
 | "The CRM rejected the username or password" | Si cambió la contraseña de la cuenta, actualizá el secret. Probá entrar manualmente al CRM con esa cuenta. | B-009 |
 | "The CRM sign-in form was not found" | El CRM cambió su pantalla de login. Guardá el HTML de `sttcrm.com/login` y revisalo. | B-006 |
 | "Shipment S-xxxxxx does not exist in the CRM" | Abrí `sttcrm.com/Admin/Shipments/Details/<número>` en el navegador. El número va sin "S-" ni ceros a la izquierda. | B-006 |
+| "Could not finish the check", "MOTUS did not respond" o error 403 de MOTUS | MOTUS está rechazando las consultas del servidor de la app. Abrí `https://motus.dot.gov/api/carriers/3692487` en tu navegador: si ahí sí carga, el bloqueo es solo hacia la app. Esperá unos minutos y reintentá; si persiste, ver la solución definitiva en B-023. | B-023 |
 | Todos los DOT salen "does not exist in MOTUS" o "Could not connect" | Abrí `https://motus.dot.gov/api/carriers/3692487` en el navegador. Si no devuelve texto con `"entityId"`, MOTUS cambió su servicio. | B-003 |
 | La dirección sale en rojo pero se ve igual | Compará letra por letra: abreviaturas (LANE/LN, AVE/AVENUE), APT/STE, ZIP. Si de verdad son idénticas, es un formato del CRM que la app no reconoce. | B-010 |
 | La app compara contra el P O BOX y no contra la dirección física | Identificadores de tipo de dirección de MOTUS. | B-005 |
