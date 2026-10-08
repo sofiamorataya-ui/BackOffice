@@ -33,6 +33,7 @@ La bitácora tiene dos archivos:
 | "Previous BCA is out of date" y la BCA parece correcta | Leer la línea de detalle: dice qué no se encontró (legal name, MC/DOT, address o signature). Con MC activo se busca el MC#; sin MC o con MC inactivo, el DOT#. | B-019 |
 | El botón Open policy (PDF) da error 404 | Que el PDF esté en `static/policies/` con el mismo nombre que en `politicas.json`, y que `config.toml` tenga `enableStaticServing = true`. | B-020 |
 | La app muestra una versión vieja de la política | La vigente es la **primera** de la lista en `politicas.json`. | B-020 |
+| El driver firmó en la app pero la app igual revisa BCAs | En Driver Information del Carrier, que el driver sea el mismo del Driver Assignment (mismo Id o nombre) y que Terms Status diga True. La línea "Terms accepted in the STT app" dice qué encontró. | B-021 |
 | "Previous BCA could not be read" | Normal si el PDF es una imagen escaneada. BackOffice la revisa a mano. | B-014 |
 | "Validate code" dice "The code log is not set up" | Secrets `SUPABASE_URL` y `SUPABASE_KEY`, y que la tabla exista (`supabase.sql`). | B-009 |
 | "The verification could not be saved to the log" | Que la key sea la **service_role** y que se haya corrido la versión más reciente de `supabase.sql` (la 2.2.0 agregó columnas). | B-009, B-016 |
@@ -50,6 +51,7 @@ La bitácora tiene dos archivos:
 | Estado de origen y destino | Página del Shipment, Route Information: `BillingAddress_*` = origen, `ShippingAddress_*` = destino | `stt_core.parse_shipment` |
 | Status y email del Driver Assignment | `/Admin/DriverAssignment/Details/<id>` | `stt_core.parse_driver_assignment` |
 | Company Name, MC, DOT y Address | `/Admin/Carrier/Details/<id>` | `stt_core.parse_carrier` |
+| Drivers del Carrier y Terms Status | POST `/Admin/Driver/DriverList?CarrierId=<id>` (sección Driver Information) | `stt_core.CRM.conductores_carrier`, `stt_core.driver_firmo_en_app` |
 | Archivos del Carrier (BCAs previas) | POST `/Admin/CarrierManagement/CarrierManagementPictureList?DriverId=<id>` | `stt_core.CRM.archivos_carrier` |
 | Descarga de un archivo | `/Admin/Download/DownloadFile?downloadGuid=<guid>` | `stt_core.CRM.descargar` |
 | USDOT, Legal Name, dirección y MC | `https://motus.dot.gov/api/carriers/<DOT>` | `stt_core.motus_resumen` |
