@@ -12,6 +12,8 @@ from __future__ import annotations
 import io
 import re
 import secrets
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -44,17 +46,61 @@ TIPO_DIR_FISICA = "eef9bd53-0da3-4b96-b462-8e2711a009ef"   # Principal Place of 
 TIPO_DIR_CORREO = "34878d0c-cf18-46ce-a23e-60bfcaf558db"   # Mailing Address
 
 
+class MotusNoDisponible(Exception):
+    """MOTUS no respondió o rechazó la consulta (por ejemplo, error 403). Ver bitácora B-023."""
+
+
+_motus_sesion: requests.Session | None = None
+_motus_lock = threading.Lock()
+
+
+def _sesion_motus(nueva: bool = False) -> requests.Session:
+    """Sesión que se presenta como un visitante de la página pública de MOTUS:
+    primero abre la página de búsqueda (para recibir sus cookies) y luego consulta los datos."""
+    global _motus_sesion
+    with _motus_lock:
+        if _motus_sesion is None or nueva:
+            s = requests.Session()
+            s.headers.update({
+                "user-agent": UA,
+                "accept-language": "en-US,en;q=0.9",
+            })
+            try:
+                s.get("https://motus.dot.gov/public/search", timeout=20,
+                      headers={"accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"})
+            except requests.RequestException:
+                pass
+            _motus_sesion = s
+        return _motus_sesion
+
+
 def motus_consultar(dot: str) -> dict | None:
-    r = requests.get(
-        MOTUS_API.format(dot=dot),
-        headers={"accept": "application/json, text/plain, */*", "user-agent": UA,
-                 "referer": "https://motus.dot.gov/public/search"},
-        timeout=30,
-    )
-    if r.status_code == 404:
-        return None
-    r.raise_for_status()
-    return r.json() or None
+    """Datos del carrier en MOTUS. None si el DOT no existe; MotusNoDisponible si MOTUS no responde."""
+    ultimo = ""
+    for intento in range(3):
+        s = _sesion_motus(nueva=intento > 0)
+        try:
+            r = s.get(MOTUS_API.format(dot=dot), timeout=30, headers={
+                "accept": "application/json, text/plain, */*",
+                "referer": "https://motus.dot.gov/public/search",
+                "sec-fetch-site": "same-origin",
+                "sec-fetch-mode": "cors",
+                "sec-fetch-dest": "empty",
+            })
+        except requests.RequestException as ex:
+            ultimo = type(ex).__name__
+        else:
+            if r.status_code == 404:
+                return None
+            if r.ok:
+                try:
+                    return r.json() or None
+                except ValueError:
+                    ultimo = "the response was not carrier data"
+            else:
+                ultimo = f"HTTP {r.status_code}"
+        time.sleep(1.5 * (intento + 1))
+    raise MotusNoDisponible(ultimo)
 
 
 def motus_resumen(data: dict) -> dict:
@@ -414,6 +460,7 @@ class ResultadoBCA:
     motus: dict | None = None
     bca_previa: dict | None = None
     terminos_app: dict | None = None     # fila de Driver Information con Terms Status True
+    motus_error: str | None = None       # MOTUS no respondió: no se puede aprobar
     checks: list[Check] = field(default_factory=list)
 
     @property
@@ -424,6 +471,8 @@ class ResultadoBCA:
     def veredicto(self) -> str:
         if any(c.grupo == GRUPO_BCA for c in self.fallas):
             return "YA_EXISTE"
+        if self.motus_error:
+            return "SIN_VERIFICAR"
         return "NO_ENVIAR" if self.fallas else "AUTORIZADO"
 
     @property
@@ -538,11 +587,12 @@ def driver_firmo_en_app(conductores: list[dict] | None, asignacion: dict | None,
 
 def evaluar_bca(shipment_id: int, shipment: dict | None, asignacion: dict | None,
                 da: dict | None, carrier: dict | None, archivos: list[dict] | None,
-                motus_data: dict | None, leer_pdf, conductores: list[dict] | None = None) -> ResultadoBCA:
+                motus_data: dict | None, leer_pdf, conductores: list[dict] | None = None,
+                motus_error: str | None = None) -> ResultadoBCA:
     """Procedimiento de BCA + excepción de términos firmados en la app."""
     estado_app, fila = driver_firmo_en_app(conductores, asignacion, da) if carrier else ("desconocido", None)
     res = _evaluar_bca_base(shipment_id, shipment, asignacion, da, carrier, archivos, motus_data, leer_pdf,
-                            revisar_archivos=(estado_app != "si"))
+                            revisar_archivos=(estado_app != "si"), motus_error=motus_error)
     if carrier is None or asignacion is None:
         return res
     link_car = _link_carrier(carrier["_id"])
@@ -571,7 +621,8 @@ def evaluar_bca(shipment_id: int, shipment: dict | None, asignacion: dict | None
 
 def _evaluar_bca_base(shipment_id: int, shipment: dict | None, asignacion: dict | None,
                 da: dict | None, carrier: dict | None, archivos: list[dict] | None,
-                motus_data: dict | None, leer_pdf, revisar_archivos: bool = True) -> ResultadoBCA:
+                motus_data: dict | None, leer_pdf, revisar_archivos: bool = True,
+                motus_error: str | None = None) -> ResultadoBCA:
     """Aplica el procedimiento de verificación de BCA de BackOffice. Función pura (sin red)."""
     res = ResultadoBCA(shipment_id, shipment, asignacion, da, carrier)
     add = res.checks.append
@@ -640,6 +691,13 @@ def _evaluar_bca_base(shipment_id: int, shipment: dict | None, asignacion: dict 
         return res
 
     # ---- 3. MOTUS ----
+    if motus_error:
+        res.motus_error = motus_error
+        add(Check(GRUPO_MOTUS, "MOTUS lookup", "warn",
+                  f"MOTUS did not respond to the app ({motus_error}), so the carrier could not be verified.",
+                  "Try again in a few minutes. If it keeps happening, let BackOffice know.",
+                  MOTUS_WEB.format(dot=dot), "Open in MOTUS"))
+        return res
     if motus_data is None:
         add(Check(GRUPO_MOTUS, "DOT registered in MOTUS", "fail",
                   f"DOT {dot} does not exist in MOTUS.",
@@ -745,7 +803,7 @@ def pre_verificar_bca(crm: CRM, shipment_id: int, motus_fn=motus_consultar) -> l
     resultados = []
     for asig in shipment["asignaciones"]:
         da = crm.driver_assignment(asig["da_id"])
-        carrier = archivos = motus_data = conductores = None
+        carrier = archivos = motus_data = conductores = motus_error = None
         if asig["carrier_id"]:
             carrier = crm.carrier(asig["carrier_id"])
             carrier["_id"] = asig["carrier_id"]
@@ -758,7 +816,10 @@ def pre_verificar_bca(crm: CRM, shipment_id: int, motus_fn=motus_consultar) -> l
             except Exception:
                 conductores = None
             dot = digitos(carrier["dot"])
-            motus_data = motus_fn(dot) if dot else None
+            try:
+                motus_data = motus_fn(dot) if dot else None
+            except MotusNoDisponible as ex:
+                motus_error = str(ex) or "no response"
 
         def leer_pdf(guid):
             try:
@@ -767,7 +828,7 @@ def pre_verificar_bca(crm: CRM, shipment_id: int, motus_fn=motus_consultar) -> l
                 return None
 
         resultados.append(evaluar_bca(shipment_id, shipment, asig, da, carrier,
-                                      archivos, motus_data, leer_pdf, conductores))
+                                      archivos, motus_data, leer_pdf, conductores, motus_error))
     return resultados
 
 
