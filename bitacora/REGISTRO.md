@@ -6,6 +6,7 @@ Historial de versiones y entradas de la bitácora. La guía de uso y el diagnós
 
 | Versión | Fecha | Cambios | Entradas |
 |---|---|---|---|
+| 2.4.1 | 2026-10-08 | La consulta a MOTUS abre primero la página pública, reintenta 3 veces y, si MOTUS no responde, muestra "Could not finish the check" en lugar de un error técnico. Esos casos no se registran como solicitudes frenadas. | B-023 |
 | 2.4.0 | 2026-10-08 | Excepción: si el driver del Driver Assignment tiene Terms Status True en Driver Information del Carrier, firmó en la app y no se pide BCA nueva. Las BCAs ya cubiertas se ven como "cubierto" y no como error. | B-021, B-022 |
 | 2.3.0 | 2026-10-02 | Corrige la regla de BCA previa: con MC activo se busca el MC# en la BCA, no el DOT#. Mensajes de BCA previa más claros, con enlace al archivo. Política de BCA publicada en la app con versión, fecha e historial. Cada verificación guarda la versión de política aplicada. | B-014, B-019, B-020 |
 | 2.2.0 | 2026-10-02 | Toda la app en inglés de EE. UU. con fechas en hora de Guatemala. Banda de cumplimiento de políticas (verde, amarillo y rojo). Shipment Owner, Dispatcher y "Requested by" leídos del CRM. Nuevas columnas en Supabase. | B-016, B-017, B-018 |
@@ -16,6 +17,21 @@ Historial de versiones y entradas de la bitácora. La guía de uso y el diagnós
 | 1.0.0 | 2026-09-30 | Validador de USDOT contra MOTUS (uno o varios DOT). | B-001 a B-005 |
 
 ## Entradas
+
+### B-023 · MOTUS rechaza las consultas desde Streamlit Cloud (error 403)
+- **Fecha:** 2026-10-08
+- **Tipo:** Falla
+- **Estado:** En observación
+- **Versión:** 2.4.1
+- **Síntoma:** Al verificar S-039981 apareció "Could not connect to the CRM or MOTUS. Try again in a moment. (403 Client Error: Forbidden for url: https://motus.dot.gov/api/carriers/4409578)". Apareció justo después de subir la versión 2.4.0.
+- **Causa:** No fue la versión 2.4.0: esa parte del código no cambió. En ese mismo momento, MOTUS devolvía los datos de GOREMOTE (DOT 4409578) consultando desde otra red. El 403 lo genera MOTUS al rechazar las consultas que salen del servidor de Streamlit Cloud, probablemente por una protección contra tráfico automatizado o por límite de consultas. El 2026-10-02 la misma consulta funcionaba.
+- **Descartado:** el código de la 2.4.0, el DOT del carrier y que MOTUS estuviera caído.
+- **Solución aplicada (2.4.1):**
+  - `stt_core.motus_consultar` abre primero la página pública de búsqueda, como un visitante normal, y reintenta hasta 3 veces con una sesión nueva antes de rendirse.
+  - Si igual no responde, la verificación termina en **"Could not finish the check"**: no se emite código, no se muestra la banda de cumplimiento (no es culpa del broker) y no se guarda en el registro.
+  - La pestaña USDOT lookup también muestra "MOTUS did not respond" por DOT, en lugar de un error técnico.
+- **Si sigue pasando:** la solución definitiva es la API oficial de FMCSA (QCMobile) con un webKey. Como desde Guatemala solo se puede registrar con VPN, que está prohibida (B-001), el registro tendría que hacerlo alguien de STT en EE. UU. con su cuenta de Login.gov. Después se agrega el webKey en los secrets y la app lo usa cuando MOTUS rechace la consulta.
+- **Cómo verificar:** Verificar S-039981. Si sale el veredicto normal, MOTUS volvió a aceptar las consultas. Si sale "Could not finish the check" varias veces durante el día, el bloqueo es permanente y hay que pasar a la API oficial.
 
 ### B-022 · Lo que ya está cubierto se veía como error en el checklist
 - **Fecha:** 2026-10-08
