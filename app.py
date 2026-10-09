@@ -694,6 +694,8 @@ def pantalla_verificacion(doc: str) -> None:
     """Pestaña completa de pre-verificación de un documento (BCA o LC)."""
     cfg = DOCS[doc]
     barra_politica(doc)
+    if doc == "LC" and anexo().error:
+        st.warning(f"BackOffice: {anexo().error}. Until it is fixed, overrides go to manual review.")
     with st.form(f"form_{doc}", border=True):
         c1, c2, c3 = st.columns([2, 2, 1.2], vertical_alignment="bottom")
         texto_ship = c1.text_input("Shipment", placeholder="S-039981", key=f"ship_{doc}")
