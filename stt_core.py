@@ -14,6 +14,7 @@ import re
 import secrets
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
@@ -28,8 +29,10 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 # Utilidades de texto
 # ============================================================
 def norm(texto: str | None) -> str:
-    """Mayúsculas, sin puntuación y con espacios simples. No cambia palabras (LANE sigue siendo LANE)."""
-    return " ".join(re.sub(r"[^A-Z0-9]+", " ", (texto or "").upper()).split())
+    """Mayúsculas, sin tildes ni puntuación y con espacios simples (Quiñonez = QUINONEZ).
+    No cambia palabras (LANE sigue siendo LANE)."""
+    sin_tildes = unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode()
+    return " ".join(re.sub(r"[^A-Z0-9]+", " ", sin_tildes.upper()).split())
 
 
 def digitos(texto: str | None) -> str:
@@ -120,6 +123,7 @@ def motus_resumen(data: dict) -> dict:
 
     correo = next((l for l in locs if l.get("addressTypeId") == TIPO_DIR_CORREO), None)
     calle_correo = " ".join(p for p in [(correo or {}).get("addressLine1"), (correo or {}).get("addressLine2")] if p)
+    zip_correo = ((correo or {}).get("zipCode") or "")[:5]
     calle = ciudad = estado_dir = zip5 = ""
     if fisica:
         calle = " ".join(p for p in [fisica.get("addressLine1"), fisica.get("addressLine2")] if p)
@@ -147,6 +151,7 @@ def motus_resumen(data: dict) -> dict:
         "dba": dba,
         "calle": calle,
         "calle_correo": calle_correo,
+        "zip_correo": zip_correo,
         "ciudad": ciudad,
         "estado": estado_dir,
         "zip": zip5,
@@ -207,20 +212,58 @@ def _id_enlace(soup: BeautifulSoup, patron: str) -> int | None:
     return int(re.search(patron, a["href"]).group(1)) if a else None
 
 
-def _requests_shipment(soup: BeautifulSoup) -> list[dict]:
-    """Bloque Requests del Shipment: id, tipo, documento y respuesta."""
+def _items_tarjeta(item) -> dict:
+    """Pares 'Etiqueta : valor' de un recuadro de una tarjeta del CRM (Requests, Shipments, Contact Roles…)."""
+    campos = {}
+    for li in item.find_all("li"):
+        lab = li.find("label")
+        if lab:
+            campos[lab.get_text(strip=True).rstrip(" :").strip()] = \
+                li.get_text(" ", strip=True)[len(lab.get_text(" ", strip=True)):].strip()
+    return campos
+
+
+def _requests(soup: BeautifulSoup, id_tarjeta: str = "order-Request") -> list[dict]:
+    """Bloque Requests (del Shipment: order-Request; de la Orden: quote-request)."""
     salida = []
-    bloque = soup.find(id="order-Request")
+    bloque = soup.find(id=id_tarjeta)
     for item in (bloque.select(".request-info-itembox") if bloque else []):
         a = item.find("a", href=re.compile(r"/Admin/Request/Details/\d+"))
-        campos = {}
-        for li in item.find_all("li"):
-            lab = li.find("label")
-            if lab:
-                campos[lab.get_text(strip=True).rstrip(" :").strip()] = li.get_text(" ", strip=True)[len(lab.get_text(" ", strip=True)):].strip()
-        salida.append({"id": a.get_text(strip=True) if a else "", "tipo": campos.get("Request Type", ""),
+        campos = _items_tarjeta(item)
+        salida.append({"id": a.get_text(strip=True) if a else "",
+                       "num": int(re.search(r"/Details/(\d+)", a["href"]).group(1)) if a else 0,
+                       "tipo": campos.get("Request Type", ""),
                        "documento": campos.get("Document", ""), "respuesta": campos.get("Response", "")})
     return salida
+
+
+def _requests_shipment(soup: BeautifulSoup) -> list[dict]:
+    return _requests(soup, "order-Request")
+
+
+def parse_sign_docs(soup: BeautifulSoup) -> list[dict]:
+    """Tarjeta Sign Documents (Orden o Shipment). El primero de arriba es el más reciente."""
+    salida = []
+    bloque = soup.find(id="quote-sign-document")
+    for fila in (bloque.select("tr.request-info-itembox-tr") if bloque else []):
+        nombre = ""
+        for td in fila.find_all("td"):
+            if td.get_text(strip=True) == "File Name :":
+                sig = td.find_next_sibling("td")
+                nombre = sig.get_text(strip=True) if sig else ""
+                break
+        a = fila.find("a", href=re.compile(r"downloadGuid="))
+        guid = re.search(r"downloadGuid=([\w\-]+)", a["href"]).group(1) if a else ""
+        if nombre or guid:
+            salida.append({"archivo": nombre, "guid": guid})
+    return salida
+
+
+def _sin_notificaciones(soup: BeautifulSoup) -> BeautifulSoup:
+    """Quita la lista de notificaciones del encabezado, que trae enlaces a otros Shipments."""
+    for n in soup.select("#notificationList, #notificationStackWrapper, .notification-item"):
+        n.decompose()
+    return soup
 
 
 def parse_shipment(soup: BeautifulSoup) -> dict | None:
@@ -237,13 +280,15 @@ def parse_shipment(soup: BeautifulSoup) -> dict | None:
         a_drv = item.find("a", href=re.compile(r"/Admin/Driver/DriverDetails/\d+"))
         if not a_da:
             continue
+        tarjeta = _items_tarjeta(item)
         asignaciones.append({
             "da_id": int(re.search(r"/Details/(\d+)", a_da["href"]).group(1)),
             "da_nombre": a_da.get_text(strip=True),
             "carrier_id": int(re.search(r"/Details/(\d+)", a_car["href"]).group(1)) if a_car else None,
-            "carrier_nombre": a_car.get_text(strip=True) if a_car else "",
+            "carrier_nombre": a_car.get_text(strip=True) if a_car else tarjeta.get("Company Name", ""),
             "driver": a_drv.get_text(" ", strip=True) if a_drv else "",
             "driver_id": int(re.search(r"/DriverDetails/(\d+)", a_drv["href"]).group(1)) if a_drv else None,
+            "status": tarjeta.get("Status", ""),
         })
 
     return {
@@ -254,8 +299,12 @@ def parse_shipment(soup: BeautifulSoup) -> dict | None:
         "status": texto.get("Status", ""),
         "origen_ciudad": por_for.get("BillingAddress_City", ""),
         "origen_estado": por_for.get("BillingAddress_State", ""),
+        "origen_zip": por_for.get("BillingAddress_ZipPostalCode", ""),
+        "origen_pais": por_for.get("BillingAddress_Country", ""),
         "destino_ciudad": por_for.get("ShippingAddress_City", ""),
         "destino_estado": por_for.get("ShippingAddress_State", ""),
+        "destino_zip": por_for.get("ShippingAddress_ZipPostalCode", ""),
+        "destino_pais": por_for.get("ShippingAddress_Country", ""),
         "asignaciones": asignaciones,
         # --- datos para Load Confirmation ---
         "fecha_pu": por_for.get("EstimatedPickUpDate", ""),
@@ -265,10 +314,12 @@ def parse_shipment(soup: BeautifulSoup) -> dict | None:
         "pago_tipo": por_for.get("PaymentType", ""),
         "carrier_pay": por_for.get("CarrierPay", ""),
         "broker_pays_carrier": por_for.get("BrokerPaysCarrier", ""),
+        "carrier_pays_broker": por_for.get("CarrierPaysBroker", ""),
         "truck_type": por_for.get("TruckType", ""),
         "special_instructions": _texto_campo(soup, "SpecialInstruction"),
         "orden_id": _id_enlace(soup, r"/Admin/Orders/Details/(\d+)"),
         "requests": _requests_shipment(soup),
+        "sign_docs": parse_sign_docs(soup),
         "dispatchers_externos": len((soup.find(id="order-DispatcherAssignment") or BeautifulSoup("", "html.parser"))
                                     .select(".request-info-itembox")),
         "_token": (soup.find("input", {"name": "__RequestVerificationToken"}) or {}).get("value", ""),
@@ -284,6 +335,8 @@ def parse_driver_assignment(soup: BeautifulSoup) -> dict:
         "carrier": texto.get("Carrier", ""),
         "dot": texto.get("DOT", ""),
         "telefono": texto.get("Driver Phone", ""),
+        "dispatch_nombre": texto.get("Dispatch Name", ""),
+        "dispatch_telefono": texto.get("Dispatch Phone", ""),
         "send_to_app": "✔" in texto.get("Send To App", ""),
     }
 
@@ -322,7 +375,87 @@ def parse_load(soup: BeautifulSoup) -> dict:
         "year": f.get("Year", ""), "make": f.get("Make", ""), "model": f.get("Model1", ""),
         "length": f.get("Length", ""), "width": f.get("Width", ""), "height": f.get("Height", ""),
         "weight": f.get("Weight", ""), "empty": f.get("Empty", ""), "cargo": f.get("Cargo", ""),
-        "hitch": f.get("Hitch", ""), "lot": f.get("LotNumber", ""),
+        "hitch": f.get("Hitch", ""), "lot": f.get("LotNumber", ""), "notas": f.get("Notes", ""),
+    }
+
+
+def parse_order(soup: BeautifulSoup) -> dict | None:
+    """Página de la Orden (/Admin/Orders/Details/<id>)."""
+    titulo = soup.title.get_text(strip=True) if soup.title else ""
+    if "Order Detail" not in titulo and not soup.find(id="load-steps"):
+        return None
+    soup = _sin_notificaciones(soup)
+    texto, f = leer_campos(soup)
+    actual = soup.select_one("#load-steps li.current span")
+    contactos = []
+    bloque = soup.find(id="quote-contact-Role")
+    for item in (bloque.select(".request-info-itembox") if bloque else []):
+        a = item.find("a", href=re.compile(r"/Admin/Customer/Details/\d+"))
+        contactos.append({"nombre": a.get_text(" ", strip=True) if a else "",
+                          "rol": _items_tarjeta(item).get("Role", "")})
+    tarjeta_ship = []
+    bloque = soup.find(id="quote-order")
+    for item in (bloque.select(".request-info-itembox") if bloque else []):
+        a = item.find("a", href=re.compile(r"/Admin/Shipments/Details/\d+"))
+        if a:
+            campos = _items_tarjeta(item)
+            tarjeta_ship.append({"id": int(re.search(r"/Details/(\d+)", a["href"]).group(1)),
+                                 "numero": a.get_text(strip=True), "status": campos.get("Status", ""),
+                                 "carrier_pay": campos.get("Carrier Pay", "")})
+    ver_todos = soup.find("a", href=re.compile(r"/Admin/Order/ViewAllOrder\?orderId=\d+"))
+    id_input = soup.find("input", {"id": "Id"})
+    return {
+        "numero": f.get("CustomOpportunityId", ""),
+        "id": int(id_input["value"]) if id_input and (id_input.get("value") or "").isdigit() else None,
+        "nombre": f.get("OpportunityName", ""),
+        "etapa": actual.get_text(strip=True).upper() if actual else "",
+        "estado_campo": f.get("QuoteStatusId", "").upper(),
+        "cliente": f.get("CustomerId", ""),
+        "contactos": contactos,
+        "agreed_payments": f.get("AgreedPayments", ""),
+        "customer_pays_otr": f.get("CustomerPaysOTR", ""),
+        "otr_pays_carrier": f.get("OTRPaysCarrier", ""),
+        "carrier_pays_broker": f.get("CarrierPaysBroker", ""),
+        "pickup": f.get("CustomerPaysCarrierOnPickUp", ""),
+        "dropoff": f.get("CustomerPaysCarrierOnDropOff", ""),
+        "carrier_pay": f.get("CarrierPay", ""),
+        "origen": {"direccion": f.get("OriginAddress1", ""), "ciudad": f.get("OriginCity", ""),
+                   "estado": f.get("OriginState", ""), "zip": f.get("OriginZip", ""), "pais": f.get("OriginCountry", "")},
+        "destino": {"direccion": f.get("DestinationAddress1", ""), "ciudad": f.get("DestinationCity", ""),
+                    "estado": f.get("DestinationState", ""), "zip": f.get("DestinationZip", ""),
+                    "pais": f.get("DestinationCountry", "")},
+        "special_terms": _texto_campo(soup, "SpecialTerms"),
+        "sign_docs": parse_sign_docs(soup),
+        "requests": _requests(soup, "quote-request"),
+        "shipments_tarjeta": tarjeta_ship,
+        "ver_todos": ver_todos["href"] if ver_todos else "",
+        "_token": (soup.find("input", {"name": "__RequestVerificationToken"}) or {}).get("value", ""),
+    }
+
+
+def parse_ids_shipments(soup: BeautifulSoup) -> list[int]:
+    """Ids de Shipment de la página View All de la Orden, en orden y sin repetir."""
+    soup = _sin_notificaciones(soup)
+    raiz = soup.find("main") or soup
+    ids = [int(x) for x in re.findall(r"/Admin/Shipments/Details/(\d+)", str(raiz))]
+    return list(dict.fromkeys(ids))
+
+
+def parse_request_detail(soup: BeautifulSoup) -> dict:
+    """Página de un Request (/Admin/Request/Details/<id>): tipo, comentario, respuesta y quién lo modificó."""
+    texto, _ = leer_campos(soup)
+    modifico = texto.get("Last Modified By", "")
+    return {
+        "id": texto.get("Request ID", ""),
+        "tipo": texto.get("Request Type", ""),
+        "documento": texto.get("Document", ""),
+        "comentario": texto.get("Comment", ""),
+        "respuesta": texto.get("Response", ""),
+        "razon": texto.get("Reason", ""),
+        "modifico": re.split(r",?\s*\d{1,2}/\d{1,2}/\d{4}", modifico)[0].strip(" ,"),
+        "modifico_completo": modifico,
+        "creo": re.split(r",?\s*\d{1,2}/\d{1,2}/\d{4}", texto.get("Created By", ""))[0].strip(" ,"),
+        "leido": bool(texto),
     }
 
 
@@ -469,6 +602,29 @@ class CRM:
     def descargar(self, guid: str) -> bytes:
         return self._get(f"/Admin/Download/DownloadFile?downloadGuid={guid}").content
 
+    def orden(self, orden_id: int) -> dict | None:
+        return parse_order(self._pagina(f"/Admin/Orders/Details/{orden_id}"))
+
+    def documentos_orden(self, orden_id: int, token: str) -> list[dict]:
+        """Tarjeta Documents de la Orden (POST /Admin/LogisticsQuote/OrderDocumentList)."""
+        r = self.s.post(
+            f"{CRM_URL}/Admin/LogisticsQuote/OrderDocumentList?LogisticQuoteId={orden_id}",
+            data={"draw": "1", "start": "0", "length": "200", "__RequestVerificationToken": token},
+            headers={"X-Requested-With": "XMLHttpRequest", "Referer": f"{CRM_URL}/Admin/Orders/Details/{orden_id}"},
+            timeout=30,
+        )
+        r.raise_for_status()
+        filas = r.json().get("Data") or []
+        return [{"tipo": x.get("TypeName") or "", "archivo": x.get("FileName") or "", "creado": x.get("CreatedOn") or "",
+                 "creado_por": x.get("CreatedBy") or "", "guid": x.get("DownloadGuid") or ""} for x in filas]
+
+    def ids_shipments_orden(self, url_ver_todos: str) -> list[int]:
+        ruta = url_ver_todos.replace(CRM_URL, "") if url_ver_todos.startswith("http") else url_ver_todos
+        return parse_ids_shipments(self._pagina(ruta))
+
+    def request(self, num: int) -> dict:
+        return parse_request_detail(self._pagina(f"/Admin/Request/Details/{num}"))
+
 
 def texto_pdf(contenido: bytes) -> str | None:
     """Texto de un PDF. None si no es PDF o es una imagen escaneada sin texto."""
@@ -487,6 +643,18 @@ def texto_pdf(contenido: bytes) -> str | None:
 # ============================================================
 UMBRAL_ROJO = 0.25   # 25 % o menos de requisitos cumplidos -> rojo
 
+# Estados de cada punto revisado (regla de Sofía, pregunta 78, bitácora B-027):
+#   ok         cumple.
+#   fail       rojo: el broker debe corregirlo. Frena la solicitud.
+#   warn       amarillo: falta algo que el broker debe conseguir (por ejemplo, un Override). También frena.
+#   exception  el dueño de la franquicia pide la solicitud: no necesita Override, pero debe escribir la
+#              excepción en el comentario del request de LC. No frena.
+#   manual     caso que la app no puede leer o que no está mapeado: pasa a BackOffice con código y
+#              BackOffice lo revisa a mano. Solo BackOffice ve estos puntos (pregunta 79).
+#   info       solo informativo.
+EVALUADOS = ("ok", "fail", "warn", "exception")
+FRENAN = ("fail", "warn")
+
 
 def nivel_cumplimiento(checks: list, requisitos_base: int) -> tuple[str, int, int]:
     """Devuelve (nivel, cumplidos, total) con nivel 'green' | 'yellow' | 'red'.
@@ -494,8 +662,8 @@ def nivel_cumplimiento(checks: list, requisitos_base: int) -> tuple[str, int, in
     Los requisitos que no se llegaron a evaluar (porque faltaba algo antes) cuentan como no cumplidos,
     por eso el total nunca es menor que `requisitos_base`.
     """
-    evaluados = [c for c in checks if c.estado in ("ok", "fail", "warn")]
-    cumplidos = sum(c.estado != "fail" for c in evaluados)
+    evaluados = [c for c in checks if c.estado in EVALUADOS]
+    cumplidos = sum(c.estado not in FRENAN for c in evaluados)
     total = max(len(evaluados), requisitos_base)
     if cumplidos == len(evaluados) and len(evaluados) >= requisitos_base:
         return "green", cumplidos, total
@@ -548,11 +716,21 @@ class ResultadoBCA:
 
     @property
     def fallas(self) -> list[Check]:
-        return [c for c in self.checks if c.estado == "fail"]
+        """Todo lo que frena la solicitud (rojo y amarillo), en el orden del checklist."""
+        return [c for c in self.checks if c.estado in FRENAN]
+
+    @property
+    def manuales(self) -> list[Check]:
+        """Lo que pasa a BackOffice para revisión manual. Solo lo ve BackOffice."""
+        return [c for c in self.checks if c.estado == "manual"]
+
+    @property
+    def excepciones(self) -> list[Check]:
+        return [c for c in self.checks if c.estado == "exception"]
 
     @property
     def veredicto(self) -> str:
-        if any(c.grupo == GRUPO_BCA for c in self.fallas):
+        if any(c.grupo == GRUPO_BCA and c.estado == "fail" for c in self.checks):
             return "YA_EXISTE"
         if self.motus_error:
             return "SIN_VERIFICAR"
@@ -560,16 +738,19 @@ class ResultadoBCA:
 
     @property
     def requisitos(self) -> tuple[int, int]:
-        evaluados = [c for c in self.checks if c.estado in ("ok", "fail", "warn")]
-        return sum(c.estado != "fail" for c in evaluados), len(evaluados)
+        evaluados = [c for c in self.checks if c.estado in EVALUADOS]
+        return sum(c.estado not in FRENAN for c in evaluados), len(evaluados)
 
     @property
     def cumplimiento(self) -> tuple[str, int, int]:
         """Nivel de cumplimiento del solicitante. La BCA ya existente no es un error del broker,
-        así que no cuenta en contra."""
+        así que no cuenta en contra. Solo es verde lo que puede recibir código."""
         checks = [c for c in self.checks if not (c.grupo == GRUPO_BCA and c.estado == "fail")]
         base = REQUISITOS_BCA - (1 if self.veredicto == "YA_EXISTE" else 0)
-        return nivel_cumplimiento(checks, base)
+        nivel, cumplidos, total = nivel_cumplimiento(checks, base)
+        if self.veredicto in ("AUTORIZADO", "YA_EXISTE") and not any(c.estado in FRENAN for c in checks):
+            return "green", cumplidos, cumplidos
+        return ("yellow" if nivel == "green" else nivel), cumplidos, total
 
 
 def _link_da(da_id):
@@ -632,9 +813,9 @@ def revisar_bca_previa(archivos, leer_pdf, carrier, motus, mc_activo: bool) -> t
 
     if ilegibles:
         nombres = ", ".join(f["archivo"] for f in ilegibles)
-        return Check(GRUPO_BCA, "Previous BCA could not be read", "warn",
+        return Check(GRUPO_BCA, "Previous BCA could not be read", "manual",
                      f"The content of {nombres} could not be read automatically. It may be a scanned image.",
-                     "You can submit the request. BackOffice will review that BCA before processing it.",
+                     "BackOffice checks whether that BCA is current (legal name, MC or DOT, address, signature).",
                      _link_carrier(carrier["_id"]), "View carrier files"), None
 
     f, faltan, resumen, link, subida = desactualizadas[0]
@@ -834,7 +1015,7 @@ def _evaluar_bca_base(shipment_id: int, shipment: dict | None, asignacion: dict 
             add(Check(GRUPO_MOTUS, "MC holds Motor Carrier of Property authority", "ok",
                       f"{auth['docket']}: Active"))
         else:
-            add(Check(GRUPO_MOTUS, "MC holds Motor Carrier of Property authority", "warn",
+            add(Check(GRUPO_MOTUS, "MC holds Motor Carrier of Property authority", "info",
                       f"{auth['docket']}: {auth['estado'] or 'no status'} in MOTUS. "
                       "The same-state rule applies."))
 
@@ -866,9 +1047,9 @@ def _evaluar_bca_base(shipment_id: int, shipment: dict | None, asignacion: dict 
     if not revisar_archivos:
         return res      # el driver firmó en la app (lo agrega evaluar_bca)
     if archivos is None:
-        add(Check(GRUPO_BCA, "Carrier files", "warn",
+        add(Check(GRUPO_BCA, "Carrier files", "manual",
                   "The carrier's files section could not be read.",
-                  "You can submit the request. BackOffice will check whether a BCA is already on file.",
+                  "BackOffice checks whether a current BCA is already on file.",
                   link_car, "View carrier files"))
     else:
         chk, previa = revisar_bca_previa(archivos, leer_pdf, carrier, m, mc_activo)
