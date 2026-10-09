@@ -18,7 +18,7 @@ import streamlit as st
 import stt_core as core
 
 RAIZ = Path(__file__).parent
-VERSION = "2.5.0"  # Cambiala en cada entrega y anotala en bitacora/REGISTRO.md
+VERSION = "2.6.0"  # Cambiala en cada entrega y anotala en bitacora/REGISTRO.md
 ZONA = ZoneInfo("America/Guatemala")
 
 st.set_page_config(page_title="STT BackOffice", page_icon=str(RAIZ / "assets" / "stt_icon.png"),
@@ -104,7 +104,8 @@ div[data-testid="stForm"]{border:1px solid var(--rule);border-radius:4px;backgro
 .grp-h span{font-size:14.5px;color:var(--muted)}
 .chk{display:grid;grid-template-columns:30px 1fr;gap:12px;padding:11px 0;border-bottom:1px solid var(--rule)}
 .mark{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;color:#fff;font-weight:700;font-size:14px;margin-top:2px}
-.mark--ok{background:var(--go)} .mark--fail{background:var(--red)} .mark--warn{background:var(--caution)} .mark--info{background:#8A9099} .mark--covered{background:var(--ink)}
+.mark--ok{background:var(--go)} .mark--fail{background:var(--red)} .mark--warn{background:var(--caution)} .mark--info{background:#8A9099} .mark--covered{background:var(--ink)} .mark--exception{background:var(--caution)}
+.chk--warn .chk-t{color:var(--caution)}
 .chk-t{font-weight:600;font-size:16.5px}
 .chk--fail .chk-t{color:var(--red)}
 .chk-d{color:var(--muted);font-size:15px;margin-top:1px;overflow-wrap:break-word}
@@ -170,6 +171,13 @@ a.pol-btn{flex:0 0 auto;display:inline-block;padding:10px 16px;background:var(--
 a.pol-btn:hover,a.pol-btn:focus-visible{background:var(--red)}
 .policy p a,.acciones .pol-ref a{color:inherit;font-weight:700}
 .acciones .pol-ref{margin:4px 0 10px;font-size:15px;color:var(--muted)}
+.excepcion{border-left:5px solid var(--caution);background:var(--caution-wash);padding:16px 22px 14px;margin-top:22px}
+.excepcion h3{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:24px;margin:0 0 6px;padding:0;color:var(--caution)}
+.excepcion p{margin:0 0 10px;font-size:16.5px;max-width:78ch}
+.excepcion blockquote{margin:0;padding:10px 14px;background:#fff;border:1px solid var(--rule);font-size:16px;user-select:all;overflow-wrap:break-word}
+.manual-list{margin:6px 0 0;padding-left:20px;font-size:15.5px}
+.manual-list li{margin:0 0 8px}
+.manual-list span{display:block;color:var(--muted);font-size:14.5px}
 .acciones .pol-ref a{margin-left:0;white-space:normal}
 .chk-d a{color:var(--red);font-weight:600;margin-left:6px;white-space:nowrap}
 .hist{width:100%;border-collapse:collapse;font-size:15px}
@@ -205,6 +213,7 @@ a.pol-btn:hover,a.pol-btn:focus-visible{background:var(--red)}
   .stTabs [role="tablist"]{gap:14px}
   .stTabs [role="tab"] p{font-size:16px}
   .acciones{padding:14px 16px 6px}
+  .excepcion{padding:14px 16px 12px}
   .acciones a{white-space:normal;margin-left:5px}
   .kpi b{font-size:38px}
 }
@@ -262,6 +271,21 @@ def registro() -> core.Registro:
 @st.cache_data(ttl=300, show_spinner=False)
 def motus(dot: str):
     return core.motus_consultar(dot)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def anexo() -> core.Anexo:
+    """Lista editable de BackOffice (anexo.json). Los cambios se toman en un minuto, sin reiniciar la app."""
+    return core.cargar_anexo(RAIZ / "anexo.json")
+
+
+def clientes_confidenciales() -> list[str]:
+    """Cliente con crédito interno: su nombre solo vive en los secrets (CLIENTES_CREDITO_INTERNO), nunca en el código."""
+    try:
+        valor = st.secrets.get("CLIENTES_CREDITO_INTERNO", [])
+    except Exception:
+        return []
+    return [valor] if isinstance(valor, str) else [str(x) for x in valor]
 
 
 def numero_shipment(texto: str) -> int | None:
@@ -337,17 +361,20 @@ DOCS = {
     },
     "LC": {
         "corto": "LC", "largo": "Load Confirmation", "pestana": "Verify LC", "boton": "Verify LC",
-        "spinner": "Checking the shipment, loads, payment, Driver Assignment, carrier documents, and MOTUS…",
+        "spinner": "Checking the order, signed SA, shipments, loads, payment, Driver Assignment, carrier documents, "
+                   "and MOTUS…",
         "procedimiento": "BackOffice's Load Confirmation procedure",
-        "requisitos_rojo": "complete shipment, load, payment, driver, and carrier information",
-        "intro": "Enter the shipment number before you request a Load Confirmation. The app checks Shipment Info, "
-                 "Special Instructions, the loads, the payment, the Driver Assignment, the carrier's documents, and "
-                 "MOTUS, then tells you whether you can submit the request or what to fix first.",
-        "pasos": [("Shipment and Special Instructions", "Dates, driver name and phone, and broker contact match"),
-                  ("Loads", "Type, quantity, description, year, and dimensions complete"),
-                  ("Payment", "Amounts match the payment type, which decides the LC template"),
+        "requisitos_rojo": "a signed or approved Shipper Agreement and complete shipment, load, payment, driver, and "
+                           "carrier information",
+        "intro": "Enter the shipment number before you request a Load Confirmation. The app checks the order and its "
+                 "signed Shipper Agreement, the amounts of every shipment in the order, Special Instructions, the "
+                 "loads, the Driver Assignment, the carrier's documents, and MOTUS. Only a request that meets every "
+                 "requirement gets a pre-verification code.",
+        "pasos": [("Order and SA", "Order stage, signed SA with the shipment's addresses, load, and full amount"),
+                  ("Amounts and addresses", "Shipments add up to the order to the cent; city, state, and ZIP match"),
+                  ("Shipment and loads", "Dates, driver, broker contact, and complete load details"),
                   ("Driver and carrier", "Same checks as the BCA, plus the driver's phone"),
-                  ("Documents", "Signed BCA (or terms accepted in the app), valid COI, and driver's license")],
+                  ("Documents and overrides", "Signed BCA, valid COI, driver's license, and any approved override")],
     },
 }
 
@@ -356,23 +383,24 @@ def html_veredicto(r, codigo: str | None, cuando: str) -> str:
     cfg = DOCS[r.documento]
     ship = e(r.shipment["numero"] if r.shipment else f"S-{r.shipment_id:06d}")
     _, total = r.requisitos
-    avisos = sum(c.estado == "warn" for c in r.checks)
     if r.veredicto == "SIN_VERIFICAR":
         titulo = "Could not finish the check"
-        sub = ("MOTUS did not respond to the app, so the carrier could not be verified and no code was issued. "
-               "This is not a problem with your request. Try again in a few minutes.")
+        if getattr(r, "error_lectura", None):
+            sub = (f"The app could not finish reading the CRM ({e(r.error_lectura)}), so no code was issued. "
+                   "This is not a problem with your request. Try again in a few minutes.")
+        else:
+            sub = ("MOTUS did not respond to the app, so the carrier could not be verified and no code was issued. "
+                   "This is not a problem with your request. Try again in a few minutes.")
         return (f'<div class="verdict verdict--wait"><div><div class="v-stamp"><span class="v-speed"></span>'
                 f'<span>{titulo}</span></div><div class="v-sub">{sub}</div></div></div>')
     if r.veredicto == "AUTORIZADO":
         cls, titulo = "ok", "Approved to send"
         sub = (f"The {cfg['largo']} request for {ship} meets all {total} automatic checks. "
-               "You can now submit it to BackOffice.")
-        if avisos == 1:
-            sub += " BackOffice will review the item marked in yellow."
-        elif avisos > 1:
-            sub += f" BackOffice will review the {avisos} items marked in yellow."
-        if any(c.grupo == core.GRUPO_MANUAL for c in r.checks):
-            sub += " BackOffice still reviews the items listed under “BackOffice reviews manually.”"
+               "You can now submit it to BackOffice with the code.")
+        if r.excepciones:
+            sub += " Write the exception shown below in the comment of your request."
+        if r.manuales:
+            sub += " BackOffice completes its final review when your request arrives."
     elif r.veredicto == "YA_EXISTE":
         if r.terminos_app:
             cls, titulo = "stop", "Do not send: signed in app"
@@ -387,9 +415,11 @@ def html_veredicto(r, codigo: str | None, cuando: str) -> str:
         cls, titulo = "stop", "Not ready to send"
         cumplidos, total_req = r.cumplimiento[1], r.cumplimiento[2]
         if n == 1:
-            sub = f"1 item must be fixed before the {cfg['largo']} on {ship} can be sent. Fix it in the CRM and verify again."
+            sub = (f"1 item must be resolved before the {cfg['largo']} on {ship} can be sent. Resolve it in the CRM "
+                   "and verify again.")
         else:
-            sub = f"{n} items must be fixed before the {cfg['largo']} on {ship} can be sent. Fix them in the CRM and verify again."
+            sub = (f"{n} items must be resolved before the {cfg['largo']} on {ship} can be sent. Resolve them in the "
+                   "CRM and verify again.")
         if total_req - cumplidos > n:
             sub += " The remaining requirements will be checked once these are fixed."
     caja = ""
@@ -477,13 +507,26 @@ def html_datos(r, gente: dict, cuando: str) -> str:
         f'<div class="fact"><span>{e(k)}</span><b>{e(v)}</b></div>' for k, v in items) + "</div>"
     html_ = fila(datos) + fila(gente_datos, "facts--people")
     if r.documento == "LC" and r.shipment:
+        o = r.orden or {}
+        etapa = core.etapa_orden(o).title() if o else ""
         html_ += fila([
-            ("LC to send", r.plantilla or "Unknown"),
+            ("Order", f"{o.get('numero')} ({etapa})" if o.get("numero") else "Not read"),
             ("Payment type", s.get("pago_tipo") or "Not set"),
             ("Case", r.caso),
             ("Loads", ", ".join(l.get("numero", "") for l in r.loads) or "None"),
         ], "facts--people")
     return html_
+
+
+def html_excepciones(r) -> str:
+    """Excepción del dueño de la franquicia (respuesta 17): no necesita Override, pero debe dejarla escrita."""
+    if r.veredicto != "AUTORIZADO" or not r.excepciones:
+        return ""
+    motivos = " ".join(c.solucion.split("request: ", 1)[-1] for c in r.excepciones)
+    return ('<div class="excepcion"><h3>Exception to state in your request</h3>'
+            '<p>You are the franchise owner, so these cases do not need an Override request. Copy this into the '
+            'comment of your LC request so BackOffice knows which exception applies:</p>'
+            f'<blockquote>Franchise owner exception: {e(motivos)}</blockquote></div>')
 
 
 def html_acciones(r) -> str:
@@ -504,23 +547,26 @@ def html_acciones(r) -> str:
     return f'<div class="acciones"><h3>{titulo}</h3>{ref}<ol>{"".join(items)}</ol></div>'
 
 
-MARCAS = {"ok": "✓", "fail": "✕", "warn": "!", "info": "–", "covered": "✓"}
+MARCAS = {"ok": "✓", "fail": "✕", "warn": "!", "info": "–", "covered": "✓", "exception": "!"}
 
 
 def html_checklist(r) -> str:
+    """Checklist que ve el broker. Lo que revisa BackOffice a mano no se muestra aquí (respuesta 79)."""
     partes = []
     for g in r.grupos:
-        cs = [c for c in r.checks if c.grupo == g]
+        if g == getattr(core, "GRUPO_MANUAL", None):
+            continue
+        cs = [c for c in r.checks if c.grupo == g and c.estado != "manual"]
         if not cs:
             continue
         evaluados = [c for c in cs if c.estado != "info"]
         # Una BCA vigente o los términos firmados en la app no son un error: ya está cubierto.
         cubierto = lambda c: c.grupo == core.GRUPO_BCA and c.estado == "fail"
-        bien = sum(c.estado != "fail" or cubierto(c) for c in evaluados)
+        bien = sum(c.estado not in core.FRENAN or cubierto(c) for c in evaluados)
         filas = []
         for c in cs:
             nota = ""
-            if c.estado == "warn" and c.solucion:
+            if c.estado in ("warn", "exception") and c.solucion:
                 link = f'<a href="{e(c.link)}" target="_blank">{e(c.link_texto)}</a>' if c.link else ""
                 nota = f'<div class="chk-note">{e(c.solucion)}{link}</div>'
             enlace = ""
@@ -532,8 +578,6 @@ def html_checklist(r) -> str:
                 f'<div class="chk chk--{visual}"><div class="mark mark--{visual}">{MARCAS[visual]}</div>'
                 f'<div><div class="chk-t">{e(c.titulo)}</div><div class="chk-d">{e(c.detalle)}{enlace}</div>{nota}</div></div>')
         resumen = f"{bien} of {len(evaluados)}" if evaluados else ""
-        if g == core.GRUPO_MANUAL:
-            resumen = "Not automated yet"
         partes.append(f'<div class="grp"><div class="grp-h"><b>{e(g)}</b><span>{resumen}</span></div>{"".join(filas)}</div>')
     return "".join(partes)
 
@@ -563,13 +607,30 @@ def html_comparacion(r) -> str:
     return f'<div class="cmp"><div class="cmp-h">CRM vs. MOTUS</div>{"".join(filas)}{links}</div>'
 
 
+def html_revision_bo(fila: dict) -> str:
+    """En Validate code: lo que BackOffice debe revisar a mano y las excepciones que pidió el broker."""
+    partes = ""
+    exc = fila.get("excepciones") or []
+    if exc:
+        partes += ('<dt>Exception claimed</dt><dd><ul class="manual-list">' + "".join(
+            f'<li>{e(x.get("titulo", ""))}<span>{e(x.get("detalle", ""))}</span></li>' for x in exc)
+            + "</ul>The request comment must state this exception.</dd>")
+    man = fila.get("revision_manual") or []
+    if man:
+        partes += ('<dt>BackOffice reviews manually</dt><dd><ul class="manual-list">' + "".join(
+            f'<li>{e(x.get("que_revisar") or x.get("titulo", ""))}<span>{e(x.get("detalle", ""))}</span></li>'
+            for x in man) + "</ul></dd>")
+    elif "revision_manual" in fila:
+        partes += "<dt>BackOffice reviews manually</dt><dd>Nothing beyond the standard review.</dd>"
+    return partes
+
+
 def guardar_en_registro(r, codigo: str | None, gente: dict) -> str | None:
     reg = registro()
     if not reg.activo:
         return None
     pol = politica(r.documento)
-    try:
-        reg.guardar({
+    fila = {
             "documento": r.documento,
             "shipment": (r.shipment or {}).get("numero") or f"S-{r.shipment_id:06d}",
             "driver_assignment": (r.asignacion or {}).get("da_nombre"),
@@ -584,9 +645,21 @@ def guardar_en_registro(r, codigo: str | None, gente: dict) -> str | None:
             "shipment_owner": gente["owner"] or None,
             "dispatcher": gente["dispatcher"] or None,
             "solicitado_por": gente["solicitante"] or None,
-        })
-    except Exception as ex:
-        return f"The verification could not be saved to the log: {ex}"
+    }
+    # Solo BackOffice ve lo que revisa a mano y las excepciones (respuesta 79). Se guardan con el código.
+    nuevas = {
+        "revision_manual": [{"titulo": c.titulo, "detalle": c.detalle, "que_revisar": c.solucion} for c in r.manuales],
+        "excepciones": [{"titulo": c.titulo, "detalle": c.detalle} for c in r.excepciones],
+    }
+    try:
+        reg.guardar({**fila, **nuevas})
+    except Exception:
+        try:
+            reg.guardar(fila)    # tabla sin las columnas de la versión 2.6.0 (correr supabase.sql)
+        except Exception as ex:
+            return f"The verification could not be saved to the log: {ex}"
+        return ("The verification was saved, but without the BackOffice review list. Run the latest supabase.sql "
+                "(version 2.6.0) in Supabase.")
     return None
 
 
@@ -636,10 +709,14 @@ def pantalla_verificacion(doc: str) -> None:
         elif "STT_EMAIL" not in st.secrets or "STT_PASSWORD" not in st.secrets:
             st.error("The app is not set up to access the CRM. STT_EMAIL and STT_PASSWORD are missing from the secrets.")
         else:
-            funcion = core.pre_verificar_bca if doc == "BCA" else core.pre_verificar_lc
             try:
                 with st.spinner(cfg["spinner"]):
-                    resultados = funcion(crm_compartido(), sid, motus_fn=motus)
+                    if doc == "BCA":
+                        resultados = core.pre_verificar_bca(crm_compartido(), sid, motus_fn=motus)
+                    else:
+                        resultados = core.pre_verificar_lc(crm_compartido(), sid, motus_fn=motus, anexo=anexo(),
+                                                           confidenciales=clientes_confidenciales(),
+                                                           manual=manual.strip())
             except core.CRMError as ex:
                 st.error(str(ex))
                 resultados = None
@@ -665,7 +742,8 @@ def pantalla_verificacion(doc: str) -> None:
     for item in paquete:
         r, gente = item["r"], item["gente"]
         st.markdown(html_veredicto(r, item["codigo"], item["cuando"]) + html_politicas(r, gente)
-                    + html_datos(r, gente, item["cuando"]) + html_acciones(r), unsafe_allow_html=True)
+                    + html_datos(r, gente, item["cuando"]) + html_excepciones(r) + html_acciones(r),
+                    unsafe_allow_html=True)
         if item["aviso"]:
             st.warning(item["aviso"])
         if item["codigo"] and not registro().activo:
@@ -729,6 +807,7 @@ with tab_bo:
                         f'<dt>Requested by</dt><dd>{e(fila.get("solicitado_por") or "Not identified")}</dd>'
                         f'<dt>Verified</dt><dd>{e(cuando)} (Guatemala time)</dd>'
                         f'<dt>Policy applied</dt><dd>{e(fila.get("politica_version") or "Not recorded")}</dd>'
+                        + html_revision_bo(fila) +
                         '</dl></div>',
                         unsafe_allow_html=True)
                     st.caption("The code confirms everything was in order at the time of verification. "
