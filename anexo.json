@@ -1,0 +1,128 @@
+{
+  "_leeme": "Anexo de BackOffice. Lo mantiene Sofia Morataya (supervisora de BackOffice). Se edita en GitHub: lapiz > cambiar > Commit changes. Nombres tal como aparecen en el CRM; mayusculas y tildes no importan. Ver bitacora/README.md, seccion 'Como editar el anexo'.",
+  "actualizado": "2026-10-09",
+
+  "franquicias": [
+    {
+      "franquicia": "Scott Russell",
+      "duenos": ["Scott Russell"],
+      "supervisores": ["Scott Russell"],
+      "aprueban_overrides": ["Scott Russell"],
+      "contactos_autorizados": []
+    },
+    {
+      "franquicia": "Alejandro Paz",
+      "duenos": ["Alejandro Paz"],
+      "supervisores": ["Alejandro Paz"],
+      "aprueban_overrides": ["Alejandro Paz"],
+      "contactos_autorizados": []
+    },
+    {
+      "franquicia": "Luis Lopez Jr",
+      "duenos": ["Luis Lopez Jr"],
+      "supervisores": ["Luis Lopez Jr"],
+      "aprueban_overrides": ["Luis Lopez Jr"],
+      "contactos_autorizados": []
+    },
+    {
+      "franquicia": "Lisa Siguere",
+      "duenos": ["Lisa Siguere"],
+      "supervisores": ["Lisa Siguere"],
+      "aprueban_overrides": ["Lisa Siguere"],
+      "contactos_autorizados": []
+    },
+    {
+      "franquicia": "Gustavo Clymire",
+      "duenos": ["Gustavo Clymire"],
+      "supervisores": ["Gustavo Clymire"],
+      "aprueban_overrides": ["Gustavo Clymire"],
+      "contactos_autorizados": []
+    },
+    {
+      "franquicia": "Ron Sanchez",
+      "duenos": ["Ron Sanchez"],
+      "supervisores": ["Ron Sanchez"],
+      "aprueban_overrides": ["Ron Sanchez"],
+      "contactos_autorizados": [
+        {"nombre": "Gabriela Salazar", "email": "gabriela.salazar@sttlg.us", "telefono": ""}
+      ]
+    },
+    {
+      "franquicia": "Jim Maravilla",
+      "duenos": ["Jim Maravilla"],
+      "supervisores": ["Jim Maravilla"],
+      "aprueban_overrides": ["Jim Maravilla"],
+      "contactos_autorizados": []
+    },
+    {
+      "franquicia": "Mario Corado",
+      "duenos": ["Mario Corado"],
+      "supervisores": ["Mario Corado"],
+      "aprueban_overrides": ["Mario Corado", "Brayan Quiñonez"],
+      "contactos_autorizados": []
+    },
+    {
+      "franquicia": "Mike Bautista",
+      "duenos": ["Mike Bautista"],
+      "supervisores": ["Mike Bautista"],
+      "aprueban_overrides": ["Mike Bautista"],
+      "contactos_autorizados": []
+    },
+    {
+      "franquicia": "Candi Fuentes",
+      "duenos": ["Candi Fuentes"],
+      "supervisores": ["Candi Fuentes"],
+      "aprueban_overrides": ["Candi Fuentes", "Diego Avila"],
+      "contactos_autorizados": [
+        {"nombre": "Calvin Avila", "email": "calvin.avila@sttlg.us", "telefono": "(786) 539-3561"}
+      ]
+    },
+    {
+      "franquicia": "Manny Jerez",
+      "duenos": ["Manny Jerez"],
+      "supervisores": ["Manny Jerez"],
+      "aprueban_overrides": ["Manny Jerez"],
+      "contactos_autorizados": []
+    },
+    {
+      "franquicia": "Main branch",
+      "duenos": [],
+      "supervisores": ["Andre Guzman", "Saul Alvarez", "Stelios Vergitsis", "Manuel Hernandez"],
+      "aprueban_overrides": ["Andre Guzman", "Saul Alvarez", "Stelios Vergitsis", "Manuel Hernandez"],
+      "contactos_autorizados": [],
+      "dispatchers": ["Brandon Santiago", "Brayan Granillo", "Alex Willemsen"]
+    }
+  ],
+
+  "transportistas_naviera": ["AES COMPANY"],
+
+  "coberturas_por_camion": [
+    {"camion": "RGN", "alias": ["RGN"], "coberturas": ["CARGO"]},
+    {"camion": "RGNE", "alias": ["RGNE"], "coberturas": ["CARGO"]},
+    {"camion": "DOUBLE DROP", "alias": ["DOUBLE DROP"], "coberturas": ["CARGO"]},
+    {"camion": "STEP DECK", "alias": ["STEP DECK", "SDL"], "coberturas": ["CARGO"]},
+    {"camion": "DRY VAN", "alias": ["DRY VAN"], "coberturas": ["CARGO"]},
+    {"camion": "REEFER", "alias": ["REEFER", "REFEER", "REFRIGERATED"], "coberturas": ["CARGO"]},
+    {"camion": "FLATBED", "alias": ["FLATBED", "FLAT BED", "FB"], "coberturas": ["CARGO"]},
+    {"camion": "POWER ONLY", "alias": ["POWER ONLY", "PO"], "coberturas": ["CARGO", "ON HOOK"]},
+    {"camion": "LOWBOY", "alias": ["LOWBOY", "LOW BOY"], "coberturas": ["CARGO"]},
+    {"camion": "HOT SHOT", "alias": ["HOT SHOT", "HOTSHOT", "HS"], "coberturas": ["CARGO"]},
+    {"camion": "RORO VESSEL", "alias": ["RORO", "RO RO", "RORO VESSEL"], "coberturas": ["CARGO"]},
+    {"camion": "INTERNATIONAL CONTAINER", "alias": ["INTERNATIONAL CONTAINER"], "coberturas": ["CARGO"]},
+    {"camion": "FLAT RACK", "alias": ["FLAT RACK", "FLATRACK"], "coberturas": ["CARGO"]},
+    {"camion": "BEAM TRAILER", "alias": ["BEAM TRAILER"], "coberturas": ["CARGO"]},
+    {"camion": "BOAT HAULING", "alias": ["BOAT HAULING", "BOAT HAULER"], "coberturas": ["CARGO"]},
+    {"camion": "STRAIGHT VAN", "alias": ["STRAIGHT VAN"], "coberturas": ["CARGO"]},
+    {"camion": "BOX TRUCK", "alias": ["BOX TRUCK"], "coberturas": ["CARGO"]},
+    {"camion": "TILT BED", "alias": ["TILTBED", "TILT BED"], "coberturas": ["CARGO"]},
+    {"camion": "CAR HAULER", "alias": ["CAR HAULER", "CARHAULER", "AUTO HAULER"], "coberturas": ["AUTOMOBILE LIABILITY"]},
+    {"camion": "DRIVE AWAY", "alias": ["DRIVE AWAY", "DRIVEAWAY", "VIN NUMBER"], "coberturas": ["DRIVE AWAY"]}
+  ],
+
+  "textos_de_cobertura": {
+    "CARGO": ["CARGO"],
+    "AUTOMOBILE LIABILITY": ["AUTOMOBILE LIABILITY", "AUTO LIABILITY"],
+    "DRIVE AWAY": ["DRIVE AWAY", "DRIVEAWAY", "DRIVE-AWAY"],
+    "ON HOOK": ["ON HOOK", "ON-HOOK"]
+  }
+}
