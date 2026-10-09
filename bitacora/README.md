@@ -1,3 +1,4 @@
+[Uploading README.md…]()
 # Bitácora de la app BackOffice de STT
 
 La app está en inglés para los brokers y dispatchers; esta bitácora queda en español para el equipo que la mantiene. Los mensajes de error se citan en inglés, tal como aparecen en la app.
@@ -38,6 +39,12 @@ La bitácora tiene dos archivos:
 | LC: "No pick-up date found in Special Instructions" y la fecha sí está | La app busca la fecha justo después de "Pick-up date" o "Delivery date" (formato MM/DD/YY o MM/DD/YYYY). Si la escriben distinto, anotarlo aquí y ajustar `_fecha_cerca`. | B-024 |
 | LC: "Broker or dispatcher contact" en amarillo | El email de Special Instructions no tiene el nombre del Owner ni del Dispatcher. BackOffice lo confirma a mano. | B-024 |
 | LC: el COI sale en rojo y parece correcto | Leer el detalle: dice qué no encontró (nombre, dirección, cobertura, vigencia o STT como holder). | B-024 |
+| LC: "Override for …" en amarillo y sí hay un Override aprobado | Abrir el request: Response debe ser Done, el Comment debe decir para qué es, y Last Modified By debe ser un aprobador de la franquicia en `anexo.json`. Si alguien lo editó después de aprobarlo, Last Modified By cambia. | B-029 |
+| LC: "does not approve overrides for this franchise" | Ver quién figura en Last Modified By y la franquicia del campo Supervisor del Shipment. Si la persona sí puede aprobar, agregarla en `anexo.json`. | B-029, B-031 |
+| LC: "Shipments match …" en rojo | El detalle muestra cada Shipment y su monto. Revisar Shipments cancelados con monto y el tipo de pago de cada uno. | B-027, B-028 |
+| LC: "Could not finish the check … the order could not be read" | Abrir la Orden del Shipment en el CRM. Si abre, guardarla con Ctrl+S y revisar `parse_order`. | B-028 |
+| LC: el dueño de franquicia no recibe la excepción | Debe estar en `duenos` de su franquicia en `anexo.json`, y el Shipment no debe tener Dispatcher Id (o debe escribir su nombre en "Requested by"). | B-031, B-033 |
+| Validate code no muestra "BackOffice reviews manually" | Correr la versión 2.6.0 de `supabase.sql` (columnas `revision_manual` y `excepciones`). | B-030 |
 | "Previous BCA could not be read" | Normal si el PDF es una imagen escaneada. BackOffice la revisa a mano. | B-014 |
 | "Validate code" dice "The code log is not set up" | Secrets `SUPABASE_URL` y `SUPABASE_KEY`, y que la tabla exista (`supabase.sql`). | B-009 |
 | "The verification could not be saved to the log" | Que la key sea la **service_role** y que se haya corrido la versión más reciente de `supabase.sql` (la 2.2.0 agregó columnas). | B-009, B-016 |
@@ -58,7 +65,12 @@ La bitácora tiene dos archivos:
 | Drivers del Carrier y Terms Status | POST `/Admin/Driver/DriverList?CarrierId=<id>` (sección Driver Information) | `stt_core.CRM.conductores_carrier`, `stt_core.driver_firmo_en_app` |
 | Loads del Shipment (LC) | POST `/Admin/Order/OrderLoadList?OrderId=<shipmentId>` y `/Admin/Loads/Details/<id>` | `stt_core.CRM.loads_shipment`, `stt_core.parse_load` |
 | Special Instructions, pago, truck, Requests (LC) | Página del Shipment | `stt_core.parse_shipment` |
-| Reglas de la LC | Procedimiento de BackOffice (ver B-024) | `stt_core.evaluar_lc` |
+| Reglas de la LC | Procedimiento de BackOffice y respuestas de Sofía (ver B-027) | `stt_core.evaluar_lc` |
+| Orden: etapa, montos, direcciones, Special Terms, Sign Documents, Contact Roles | `/Admin/Orders/Details/<id>` | `stt_core.parse_order` |
+| Documents de la Orden | POST `/Admin/LogisticsQuote/OrderDocumentList?LogisticQuoteId=<id>` | `stt_core.CRM.documentos_orden` |
+| Todos los Shipments de la Orden | `/Admin/Order/ViewAllOrder?orderId=<quoteId>` | `stt_core.CRM.ids_shipments_orden` |
+| Detalle de un Override (Comment, Response, Last Modified By) | `/Admin/Request/Details/<id>` | `stt_core.parse_request_detail` |
+| Dueños, aprobadores, contactos, Naviera y coberturas por camión | `anexo.json` (lo mantiene Sofía) | `stt_core.Anexo` |
 | Archivos del Carrier (BCAs previas) | POST `/Admin/CarrierManagement/CarrierManagementPictureList?DriverId=<id>` | `stt_core.CRM.archivos_carrier` |
 | Descarga de un archivo | `/Admin/Download/DownloadFile?downloadGuid=<guid>` | `stt_core.CRM.descargar` |
 | USDOT, Legal Name, dirección y MC | `https://motus.dot.gov/api/carriers/<DOT>` | `stt_core.motus_resumen` |
@@ -82,6 +94,17 @@ Buena práctica: nunca se reemplaza ni se borra un PDF publicado. Cada versión 
 |---|---|
 | `STT_EMAIL`, `STT_PASSWORD` | Entrar al CRM (por ahora con la cuenta de Sofía, ver B-009). |
 | `SUPABASE_URL`, `SUPABASE_KEY` | Guardar verificaciones, validar códigos y mostrar estadísticas. Opcionales. |
+| `CLIENTES_CREDITO_INTERNO` | Lista con el nombre del cliente confidencial con crédito interno, tal como aparece en el Contact Role (Signer). Nunca va en el código (B-032). |
+
+## Cómo editar el anexo (`anexo.json`)
+
+Lo mantiene Sofía. Se edita en GitHub: abrir `anexo.json`, tocar el lápiz, cambiar y **Commit changes**. La app toma el cambio en un minuto, sin reiniciar.
+
+- Cada franquicia tiene: `duenos` (pueden pedir sin Override, con la excepción en el comentario), `supervisores` (los nombres que aparecen en el campo Supervisor del Shipment), `aprueban_overrides` y `contactos_autorizados` (personas cuyo email puede ir en Special Instructions, por ejemplo Gabriela Salazar o Calvin Avila).
+- Los nombres van como en el CRM. Mayúsculas, tildes y "Jr" no importan, pero hacen falta nombre y apellido.
+- Respetar las comillas, las comas entre elementos y los corchetes. Si el archivo queda mal escrito, la app no reconoce ninguna franquicia y manda los Overrides a revisión manual. Para comprobarlo, pegar el contenido en un validador de JSON antes de guardar.
+- `transportistas_naviera`: carriers que identifican un Shipment de Naviera (hoy AES COMPANY).
+- `coberturas_por_camion`: qué cobertura del COI exige cada tipo de camión, con las formas en que se escribe el camión en el CRM (`alias`).
 
 ## Cómo registrar algo nuevo
 
