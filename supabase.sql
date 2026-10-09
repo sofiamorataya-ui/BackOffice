@@ -2,7 +2,7 @@
 create table if not exists public.prechecks (
   id                bigint generated always as identity primary key,
   created_at        timestamptz not null default now(),
-  documento         text not null,              -- BCA
+  documento         text not null,              -- BCA | LC
   shipment          text not null,              -- S-039981
   driver_assignment text,                       -- D-021956
   carrier           text,
@@ -15,7 +15,9 @@ create table if not exists public.prechecks (
   shipment_owner    text,
   dispatcher        text,
   solicitado_por    text,
-  politica_version  text                        -- p. ej. BCA Verification Policy v1.0
+  politica_version  text,                       -- p. ej. BCA Verification Policy v1.0
+  revision_manual   jsonb not null default '[]'::jsonb,  -- 2.6.0: lo que BackOffice revisa a mano
+  excepciones       jsonb not null default '[]'::jsonb   -- 2.6.0: excepción del dueño de franquicia
 );
 create index if not exists prechecks_created_at_idx on public.prechecks (created_at desc);
 
@@ -29,3 +31,7 @@ alter table public.prechecks enable row level security;
 
 -- 2.3.0: versión de la política aplicada en cada verificación (por ejemplo "BCA Verification Policy v1.0").
 alter table public.prechecks add column if not exists politica_version text;
+
+-- 2.6.0: lo que BackOffice revisa a mano y las excepciones del dueño de la franquicia (solo las ve BackOffice).
+alter table public.prechecks add column if not exists revision_manual jsonb not null default '[]'::jsonb;
+alter table public.prechecks add column if not exists excepciones     jsonb not null default '[]'::jsonb;
