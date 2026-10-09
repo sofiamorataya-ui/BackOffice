@@ -1,3 +1,4 @@
+[Uploading REGISTRO.md…]()
 # Registro
 
 Historial de versiones y entradas de la bitácora. La guía de uso y el diagnóstico rápido están en el [README](README.md).
@@ -6,6 +7,7 @@ Historial de versiones y entradas de la bitácora. La guía de uso y el diagnós
 
 | Versión | Fecha | Cambios | Entradas |
 |---|---|---|---|
+| 2.6.0 | 2026-10-09 | LC versión 2 con las 82 respuestas de Sofía: Orden y SA firmado, Revoke, Overrides con quién aprueba por franquicia, excepción del dueño de franquicia, montos de todos los Shipments de la Orden, direcciones, loads repetidas, COI por tipo de camión y vigencia, licencia, varios Driver Assignments, driver de la app. **Solo lo verde recibe código**; amarillo y rojo frenan. Lo que BackOffice revisa a mano solo lo ve BackOffice (en Validate code). Anexo editable `anexo.json`. Borrador de la política de LC en inglés para Sofía. | B-027 a B-033 |
 | 2.5.0 | 2026-10-08 | Nueva pestaña **Verify LC**: pre-verificación de Load Confirmation con Shipment Info, Special Instructions, Loads, pago (y plantilla de LC), truck, Driver Assignment, Carrier, MOTUS, BCA, COI, licencia y driver de la app. Lo de la Orden y el SA queda como revisión manual. Códigos `LC-` y estadísticas por documento. | B-024, B-025, B-026 |
 | 2.4.1 | 2026-10-08 | La consulta a MOTUS abre primero la página pública, reintenta 3 veces y, si MOTUS no responde, muestra "Could not finish the check" en lugar de un error técnico. Esos casos no se registran como solicitudes frenadas. | B-023 |
 | 2.4.0 | 2026-10-08 | Excepción: si el driver del Driver Assignment tiene Terms Status True en Driver Information del Carrier, firmó en la app y no se pide BCA nueva. Las BCAs ya cubiertas se ven como "cubierto" y no como error. | B-021, B-022 |
@@ -19,10 +21,83 @@ Historial de versiones y entradas de la bitácora. La guía de uso y el diagnós
 
 ## Entradas
 
+### B-033 · Decisiones tomadas donde las respuestas dejaban algo abierto
+- **Fecha:** 2026-10-09
+- **Tipo:** Decisión
+- **Estado:** Pendiente de confirmar por Sofía (están en la última página del borrador de la política)
+- **Versión:** 2.6.0
+- **Decisiones:**
+  - Lo que la app no puede leer (PDF escaneado, una sección del CRM, el detalle de un Override) o un caso sin regla pasa con código y queda en la revisión manual de BackOffice (es el "caso no mapeado" de la respuesta 78).
+  - Excepción del dueño de franquicia: aplica si el Shipment Owner es dueño y el Shipment no tiene Dispatcher Id, o si el dueño escribe su nombre en "Requested by". Solo los 11 dueños del anexo; los supervisores de la Main branch no.
+  - COI vencido (nunca se aprueba con Override): la cobertura terminó antes de hoy o antes del Estimated Pickup Date. Si termina entre el pick-up y 10 días después del delivery, se puede aprobar con Override.
+  - International/Naviera: check International del Shipment, destino de la Orden fuera de US, o un Shipment de la Orden asignado a AES COMPANY.
+  - Revoke: si el último request del SA (Orden o Shipment) es un Revoke en Done, el SA firmado no vale.
+  - Override con Response Done pero Reason "Rejected" o "Denied": no cuenta.
+  - SA: ciudad, estado, ZIP, Make, Model, año y Full Amount frenan si faltan; peso y medidas van a revisión manual hasta tener un SA de ejemplo.
+  - Drive Away sin cobertura ni VIN en el COI: revisión manual, porque la app no ve el perfil del driver donde suben la llamada con la agencia.
+  - Cobertura que no aparece en el texto del COI: frena solo si el texto trae las etiquetas del formulario ACORD (por ejemplo "GENERAL LIABILITY"); si no, revisión manual.
+- **Cómo verificar:** Cuando Sofía confirme o corrija cada punto, actualizar esta entrada y el código.
+
+### B-032 · Cliente con crédito interno en los secrets
+- **Fecha:** 2026-10-09
+- **Tipo:** Decisión
+- **Estado:** Vigente
+- **Versión:** 2.6.0
+- **Solución:** El nombre va en el secret `CLIENTES_CREDITO_INTERNO` (lista), no en el código (reemplaza el nombre provisional de B-025). La app lo busca en el Customer de la Orden y en el Contact Role con rol Signer. Solo exime del SA sin firmar (Awaiting Customer Signature) y queda como punto de revisión manual que solo ve BackOffice. No aparece en la política.
+- **Cómo configurarlo:** En Streamlit Cloud, Manage app → Settings → Secrets: `CLIENTES_CREDITO_INTERNO = ["<nombre tal como aparece en el Contact Role>"]`.
+- **Cómo verificar:** Buscar el nombre en el repo: no debe aparecer.
+
+### B-031 · Anexo editable de BackOffice (`anexo.json`)
+- **Fecha:** 2026-10-09
+- **Tipo:** Decisión
+- **Estado:** Vigente
+- **Versión:** 2.6.0
+- **Solución:** Franquicias (dueños, supervisores, quién aprueba Overrides, contactos autorizados en Special Instructions), transportistas de Naviera y la tabla de coberturas por tipo de camión. Lo mantiene Sofía (respuesta 82). La app lo vuelve a leer cada minuto. Ver "Cómo editar el anexo" en el README.
+- **Cómo verificar:** Cambiar un nombre en GitHub y verificar un Shipment de esa franquicia un minuto después.
+
+### B-030 · Solo lo verde recibe código; la revisión manual solo la ve BackOffice
+- **Fecha:** 2026-10-09
+- **Tipo:** Decisión
+- **Estado:** Vigente
+- **Versión:** 2.6.0
+- **Causa:** Respuestas 78 y 79.
+- **Solución:** Nuevos estados en `stt_core`: `warn` (amarillo, frena; por ejemplo falta un Override), `exception` (dueño de franquicia, no frena) y `manual` (pasa a BackOffice). Aplica a BCA y LC: una BCA previa ilegible o los archivos del Carrier sin leer pasan a revisión manual; el MC inactivo pasa a informativo. La lista manual y las excepciones se guardan en Supabase (`revision_manual`, `excepciones`) y aparecen al validar el código.
+- **Cómo verificar:** Correr `supabase.sql` (2.6.0). Validar un código LC: debe mostrar "BackOffice reviews manually".
+
+### B-029 · Overrides: para qué son y quién los aprueba
+- **Fecha:** 2026-10-09
+- **Tipo:** Decisión
+- **Estado:** Vigente
+- **Versión:** 2.6.0
+- **Solución:** La app abre cada request de tipo Override del Shipment (`/Admin/Request/Details/<id>`) y lee Comment, Response, Reason y Last Modified By. El propósito sale del comentario (SA sin firmar, pago COD/COP, COI, dirección). Aprobado = Response Done y Last Modified By es aprobador de la franquicia del campo Supervisor (anexo). Si la franquicia no se identifica, o el comentario no dice para qué es, va a revisión manual.
+- **Cómo verificar:** Un Override aprobado por alguien de otra franquicia sale en rojo con el nombre de quién debe aprobarlo.
+
+### B-028 · Lectura de la Orden y de todos sus Shipments
+- **Fecha:** 2026-10-09
+- **Tipo:** Hallazgo
+- **Estado:** Vigente
+- **Versión:** 2.6.0
+- **Hallazgos (Orden O-076869):**
+  - La etapa es el `li.current` de la barra `#load-steps`. Cuando la barra dice "CLOSED", se usa el campo Order Status (`QuoteStatusId`) para distinguir Completed de Closed Lost.
+  - Sign Documents (`#quote-sign-document`): el primero es el más reciente. Documents: POST `/Admin/LogisticsQuote/OrderDocumentList?LogisticQuoteId=<id>`.
+  - La tarjeta Shipments muestra como máximo 3; la lista completa está en `/Admin/Order/ViewAllOrder?orderId=<quoteId>`. Si no se puede leer y hay 3, los montos van a revisión manual.
+  - El encabezado trae notificaciones con enlaces a otros Shipments: se quitan antes de leer.
+  - Payment Type en el Shipment se ve como "Pay by OTR", "Pay by broker", "Collect on Pick Up", "Collect on Delivery", "Joint".
+- **Pendiente:** confirmar el formato de la página View All y de un SA firmado (archivos A y B).
+
+### B-027 · Load Confirmation versión 2
+- **Fecha:** 2026-10-09
+- **Tipo:** Decisión
+- **Estado:** Vigente
+- **Versión:** 2.6.0
+- **Causa:** Respuestas de Sofía a las 82 preguntas (2026-10-09).
+- **Solución:** `stt_core.evaluar_lc` reescrito. Grupos: Order and Shipper Agreement, Shipment info, Loads, Payment, Amounts match the order, Addresses, Truck, Special Instructions, Driver Assignment, Carrier, MOTUS, Route, Carrier documents, STT app driver. Probado con 60 escenarios (datos reales de S-039245 y O-076869 más casos sintéticos).
+- **Cómo verificar:** Verificar S-039245 en Verify LC y revisar cada grupo.
+
 ### B-026 · Pendiente para automatizar el resto de la LC
 - **Fecha:** 2026-10-08
 - **Tipo:** Hallazgo
-- **Estado:** Pendiente
+- **Estado:** Resuelto en 2.6.0 (ver B-027 y B-028), salvo lo que depende de los archivos A, B, C, E y F
 - **Versión:** 2.5.0
 - **Síntoma:** Varias reglas del procedimiento de LC dependen de páginas del CRM que la app todavía no conoce. Hoy aparecen en el grupo "BackOffice reviews manually".
 - **Qué falta y qué se necesita:**
