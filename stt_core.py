@@ -39,6 +39,25 @@ def digitos(texto: str | None) -> str:
     return re.sub(r"\D", "", texto or "")
 
 
+def zip_norm(z: str | None) -> str:
+    """Código postal comparable. EE. UU.: los 5 dígitos (07054-3121 = 07054). Canadá y otros países: el código
+    completo sin espacios (T6M 1R7 = T6M1R7). Antes se cortaba a 5 caracteres y "T6M 1R7" quedaba "T6M 1"
+    (bitácora B-039)."""
+    z = (z or "").strip().upper()
+    if re.match(r"^\d{5}(?:-?\d{4})?$", z):
+        return z[:5]
+    return re.sub(r"[^A-Z0-9]", "", z)
+
+
+def zip_en_texto(z: str | None, texto: str) -> bool:
+    zn = zip_norm(z)
+    if not zn:
+        return False
+    if zn.isdigit():
+        return bool(re.search(rf"(?<!\d){zn}(?!\d)", texto or ""))
+    return zn in re.sub(r"[^A-Z0-9]", "", (texto or "").upper())
+
+
 # ============================================================
 # MOTUS
 # ============================================================
@@ -112,24 +131,35 @@ def motus_resumen(data: dict) -> dict:
               .get("dotNumberStatus") or "")
     fuera_servicio = bool(data.get("outOfService"))
 
+    # MOTUS puede traer varias filas activas del mismo tipo (por ejemplo, la dirección anterior y la nueva).
+    # Vale la más reciente, que es la que muestra la página de MOTUS (bitácora B-039).
+    def reciente(filas):
+        filas = list(filas)
+        if not filas:
+            return None
+        return max(enumerate(filas), key=lambda x: (bool(x[1].get("primaryAddressFlag", True)),
+                                                     x[1].get("updateDate") or x[1].get("createDate") or "", x[0]))[1]
+
     nombres = [n for n in data.get("entityNames") or [] if not n.get("disableDate")]
-    legal = next((n.get("entityName") or "" for n in nombres if n.get("nameType") == "Legal"), "")
-    dba = next((n.get("entityName") or "" for n in nombres if n.get("nameType") == "DBA"), "")
+    legal = (reciente(n for n in nombres if n.get("nameType") == "Legal") or {}).get("entityName") or ""
+    dba = (reciente(n for n in nombres if n.get("nameType") == "DBA") or {}).get("entityName") or ""
 
     locs = [l for l in data.get("locations") or [] if not l.get("disableDate")]
-    fisica = next((l for l in locs if l.get("addressTypeId") == TIPO_DIR_FISICA), None)
+    fisica = reciente(l for l in locs if l.get("addressTypeId") == TIPO_DIR_FISICA)
     if fisica is None:  # por si MOTUS cambia los identificadores de tipo
-        fisica = next((l for l in locs if l.get("addressTypeId") != TIPO_DIR_CORREO), None)
+        fisica = reciente(l for l in locs if l.get("addressTypeId") != TIPO_DIR_CORREO)
 
-    correo = next((l for l in locs if l.get("addressTypeId") == TIPO_DIR_CORREO), None)
-    calle_correo = " ".join(p for p in [(correo or {}).get("addressLine1"), (correo or {}).get("addressLine2")] if p)
-    zip_correo = ((correo or {}).get("zipCode") or "")[:5]
+    correo = reciente(l for l in locs if l.get("addressTypeId") == TIPO_DIR_CORREO)
+    calle_correo = " ".join(p.strip() for p in [(correo or {}).get("addressLine1"), (correo or {}).get("addressLine2")]
+                            if p and p.strip())
+    zip_correo = zip_norm((correo or {}).get("zipCode"))
     calle = ciudad = estado_dir = zip5 = ""
     if fisica:
-        calle = " ".join(p for p in [fisica.get("addressLine1"), fisica.get("addressLine2")] if p)
-        ciudad = fisica.get("city") or ""
-        estado_dir = fisica.get("state") or ""
-        zip5 = (fisica.get("zipCode") or "")[:5]
+        calle = " ".join(p.strip() for p in [fisica.get("addressLine1"), fisica.get("addressLine2")] if p and p.strip())
+        ciudad = (fisica.get("city") or "").strip()
+        estado_dir = (fisica.get("state") or "").strip()
+        zip5 = (fisica.get("zipCode") or "").strip().upper()
+        zip5 = zip5[:5] if re.match(r"^\d{5}", zip5) else zip5
 
     autoridades = []
     for reg in data.get("entityRegistrations") or []:
@@ -316,6 +346,8 @@ def parse_shipment(soup: BeautifulSoup) -> dict | None:
         "broker_pays_carrier": por_for.get("BrokerPaysCarrier", ""),
         "carrier_pays_broker": por_for.get("CarrierPaysBroker", ""),
         "truck_type": por_for.get("TruckType", ""),
+        "truck_description": por_for.get("TruckDescription", "") if por_for.get("TruckDescription", "").strip()
+        .lower() != "truck description" else "",
         "special_instructions": _texto_campo(soup, "SpecialInstruction"),
         "orden_id": _id_enlace(soup, r"/Admin/Orders/Details/(\d+)"),
         "requests": _requests_shipment(soup),
@@ -376,6 +408,7 @@ def parse_load(soup: BeautifulSoup) -> dict:
         "length": f.get("Length", ""), "width": f.get("Width", ""), "height": f.get("Height", ""),
         "weight": f.get("Weight", ""), "empty": f.get("Empty", ""), "cargo": f.get("Cargo", ""),
         "hitch": f.get("Hitch", ""), "lot": f.get("LotNumber", ""), "notas": f.get("Notes", ""),
+        "drayage": f.get("Drayage", ""),
     }
 
 
@@ -402,6 +435,12 @@ def parse_order(soup: BeautifulSoup) -> dict | None:
             tarjeta_ship.append({"id": int(re.search(r"/Details/(\d+)", a["href"]).group(1)),
                                  "numero": a.get_text(strip=True), "status": campos.get("Status", ""),
                                  "carrier_pay": campos.get("Carrier Pay", "")})
+    historial = []
+    bloque = soup.find(id="quote-stage-history")
+    for item in (bloque.select(".request-info-itembox") if bloque else []):
+        campos = _items_tarjeta(item)
+        historial.append({"etapa": campos.get("Stage", "").upper(), "fecha": campos.get("Last Modified", ""),
+                          "por": campos.get("Last Modified By", "")})
     ver_todos = soup.find("a", href=re.compile(r"/Admin/Order/ViewAllOrder\?orderId=\d+"))
     id_input = soup.find("input", {"id": "Id"})
     return {
@@ -428,6 +467,7 @@ def parse_order(soup: BeautifulSoup) -> dict | None:
         "sign_docs": parse_sign_docs(soup),
         "requests": _requests(soup, "quote-request"),
         "shipments_tarjeta": tarjeta_ship,
+        "historial": historial,
         "ver_todos": ver_todos["href"] if ver_todos else "",
         "_token": (soup.find("input", {"name": "__RequestVerificationToken"}) or {}).get("value", ""),
     }
@@ -439,6 +479,24 @@ def parse_ids_shipments(soup: BeautifulSoup) -> list[int]:
     raiz = soup.find("main") or soup
     ids = [int(x) for x in re.findall(r"/Admin/Shipments/Details/(\d+)", str(raiz))]
     return list(dict.fromkeys(ids))
+
+
+def _fecha_hora(texto: str | None) -> datetime | None:
+    """Fecha y hora del CRM: '10/7/2026 6:25:14 PM' (también sin segundos o sin hora)."""
+    m = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AP]M)?)?", texto or "", re.I)
+    if not m:
+        return None
+    mes, dia, anio = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    hora, minuto, seg = int(m.group(4) or 0), int(m.group(5) or 0), int(m.group(6) or 0)
+    ampm = (m.group(7) or "").upper()
+    if ampm == "PM" and hora < 12:
+        hora += 12
+    if ampm == "AM" and hora == 12:
+        hora = 0
+    try:
+        return datetime(anio, mes, dia, hora, minuto, seg)
+    except ValueError:
+        return None
 
 
 def parse_request_detail(soup: BeautifulSoup) -> dict:
@@ -455,6 +513,8 @@ def parse_request_detail(soup: BeautifulSoup) -> dict:
         "modifico": re.split(r",?\s*\d{1,2}/\d{1,2}/\d{4}", modifico)[0].strip(" ,"),
         "modifico_completo": modifico,
         "creo": re.split(r",?\s*\d{1,2}/\d{1,2}/\d{4}", texto.get("Created By", ""))[0].strip(" ,"),
+        "fecha_modificado": _fecha_hora(modifico),
+        "fecha_creado": _fecha_hora(texto.get("Created By", "")),
         "leido": bool(texto),
     }
 
@@ -477,27 +537,51 @@ def partir_direccion_crm(direccion: str) -> dict:
     Acepta los formatos que usa el CRM, por ejemplo:
       '395 GARCIA LANE, SAN LUIS, AZ, 85349, US'
       '8212 NE 13TH AVE APT C7, VANCOUVER, WA 98665'
+      '2007 207 ST NW, EDMONTON, AB, T6M 1R7, CA'   (Canadá: código postal de 6 caracteres)
     """
-    texto = re.sub(r"[,\s]+(US|USA|UNITED STATES)\s*$", "", (direccion or "").strip(), flags=re.I)
+    texto = (direccion or "").strip()
     m = re.match(r"^(?P<calle>.+?),\s*(?P<ciudad>[^,]+?)\s*,\s*(?P<estado>[A-Za-z]{2})\s*,?\s*"
-                 r"(?P<zip>\d{5})(?:-\d{4})?\s*$", texto)
+                 r"(?P<zip>\d{5}(?:-\d{4})?|[A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d)\s*"
+                 r"(?:,?\s*(?:US|USA|UNITED STATES|CA|CAN|CANADA|MX|MEX|MEXICO))?\s*$", texto, re.I)
     if not m:
+        texto = re.sub(r"[,\s]+(US|USA|UNITED STATES)\s*$", "", texto, flags=re.I)
         return {"calle": texto, "ciudad": "", "estado": "", "zip": ""}
-    return {"calle": m["calle"].strip(), "ciudad": m["ciudad"].strip(),
-            "estado": m["estado"].upper(), "zip": m["zip"]}
+    z = m["zip"].upper()
+    z = z[:5] if z[:5].isdigit() else re.sub(r"\s+", " ", z if " " in z else z[:3] + " " + z[3:])
+    return {"calle": m["calle"].strip(), "ciudad": m["ciudad"].strip(), "estado": m["estado"].upper(), "zip": z}
+
+
+def compacto(texto: str | None) -> str:
+    """Solo letras y números, sin espacios: '#R-7', 'R 7' y 'R7' quedan iguales. Las palabras no cambian."""
+    return norm(texto).replace(" ", "")
 
 
 def direccion_igual(direccion_crm: str, motus: dict) -> bool:
-    """Compara contra la Principal Place of Business de MOTUS: mismas palabras, sin importar
-    mayúsculas, comas ni el 'US' final. Una abreviatura distinta (LANE / LN) no es igual."""
+    """Compara contra la Principal Place of Business de MOTUS: mismas palabras en el mismo orden, sin importar
+    mayúsculas, comas, guiones, '#', espacios ni el 'US' final. Una abreviatura distinta (LANE / LN) no es igual."""
     if not motus.get("direccion"):
         return False
     p = partir_direccion_crm(direccion_crm)
     if p["ciudad"]:
-        return (norm(p["calle"]) == norm(motus["calle"]) and norm(p["ciudad"]) == norm(motus["ciudad"])
-                and norm(p["estado"]) == norm(motus["estado"]) and p["zip"] == motus["zip"])
+        return (compacto(p["calle"]) == compacto(motus["calle"]) and norm(p["ciudad"]) == norm(motus["ciudad"])
+                and norm(p["estado"]) == norm(motus["estado"]) and zip_norm(p["zip"]) == zip_norm(motus["zip"]))
     # Formato no reconocido: se compara el texto completo
-    return norm(p["calle"]) == norm(f"{motus['calle']} {motus['ciudad']} {motus['estado']} {motus['zip']}")
+    return compacto(p["calle"]) == compacto(f"{motus['calle']} {motus['ciudad']} {motus['estado']} {motus['zip']}")
+
+
+def diferencias_direccion(direccion_crm: str, motus: dict) -> str:
+    """Qué palabras de la dirección están en un lado y no en el otro, para que el broker vea qué corregir."""
+    p = partir_direccion_crm(direccion_crm)
+    crm = norm(" ".join([p["calle"], p["ciudad"], p["estado"], p["zip"]]) if p["ciudad"] else p["calle"]).split()
+    mot = norm(f"{motus.get('calle')} {motus.get('ciudad')} {motus.get('estado')} {motus.get('zip')}").split()
+    solo_crm = [w for w in crm if w not in mot]
+    solo_motus = [w for w in mot if w not in crm]
+    partes = []
+    if solo_crm:
+        partes.append(f"only in the CRM: {' '.join(solo_crm)}")
+    if solo_motus:
+        partes.append(f"only in MOTUS: {' '.join(solo_motus)}")
+    return "; ".join(partes) if partes else "same words, different order"
 
 
 class CRM:
@@ -618,9 +702,29 @@ class CRM:
         return [{"tipo": x.get("TypeName") or "", "archivo": x.get("FileName") or "", "creado": x.get("CreatedOn") or "",
                  "creado_por": x.get("CreatedBy") or "", "guid": x.get("DownloadGuid") or ""} for x in filas]
 
+    def documentos_shipment(self, shipment_id: int, token: str) -> list[dict]:
+        """Tarjeta Documents del Shipment (POST /Admin/Order/OrderDocumentList)."""
+        r = self.s.post(
+            f"{CRM_URL}/Admin/Order/OrderDocumentList?OrderId={shipment_id}",
+            data={"draw": "1", "start": "0", "length": "200", "__RequestVerificationToken": token},
+            headers={"X-Requested-With": "XMLHttpRequest", "Referer": f"{CRM_URL}/Admin/Shipments/Details/{shipment_id}"},
+            timeout=30,
+        )
+        r.raise_for_status()
+        filas = r.json().get("Data") or []
+        return [{"tipo": x.get("TypeName") or "", "archivo": x.get("FileName") or "", "creado": x.get("CreatedOn") or "",
+                 "guid": x.get("DownloadGuid") or ""} for x in filas]
+
     def ids_shipments_orden(self, url_ver_todos: str) -> list[int]:
-        ruta = url_ver_todos.replace(CRM_URL, "") if url_ver_todos.startswith("http") else url_ver_todos
-        return parse_ids_shipments(self._pagina(ruta))
+        """Todos los Shipments de la Orden. La página View All carga la tabla con
+        GET /Admin/Order/OrderList?opportunityId=<quoteId> (JSON), que es lo que se lee aquí (bitácora B-043)."""
+        m = re.search(r"orderId=(\d+)", url_ver_todos or "")
+        if not m:
+            return []
+        import json as _json
+        datos = _json.loads(self._get(f"/Admin/Order/OrderList?opportunityId={m.group(1)}").text)
+        filas = datos.get("data") or datos.get("Data") or []
+        return list(dict.fromkeys(int(f["Id"]) for f in filas if f.get("Id")))
 
     def request(self, num: int) -> dict:
         return parse_request_detail(self._pagina(f"/Admin/Request/Details/{num}"))
@@ -632,10 +736,27 @@ def texto_pdf(contenido: bytes) -> str | None:
         return None
     try:
         from pypdf import PdfReader
-        texto = "\n".join((p.extract_text() or "") for p in PdfReader(io.BytesIO(contenido)).pages)
+        paginas = PdfReader(io.BytesIO(contenido)).pages
+        texto = "\n".join((p.extract_text() or "") for p in paginas)
     except Exception:
         return None
-    return texto if len(texto.strip()) > 40 else None
+    if len(texto.strip()) <= 40:
+        return None
+    # Segunda lectura respetando las columnas (pypdf 4 o más): en los COI deja cada cobertura en su fila,
+    # con sus fechas y su límite. Se agrega al final, después de una marca (bitácora B-044).
+    try:
+        columnas = "\n".join((p.extract_text(extraction_mode="layout") or "") for p in paginas)
+    except Exception:
+        columnas = ""
+    return texto + (f"\n{MARCA_COLUMNAS}\n" + columnas if columnas.strip() else "")
+
+
+MARCA_COLUMNAS = "===== COLUMNAS ====="
+
+
+def sin_columnas(texto: str | None) -> str:
+    """El texto del PDF sin la segunda lectura por columnas (para leer el SA campo por campo)."""
+    return (texto or "").split(MARCA_COLUMNAS)[0]
 
 
 # ============================================================
@@ -705,6 +826,7 @@ class ResultadoBCA:
     motus: dict | None = None
     bca_previa: dict | None = None
     terminos_app: dict | None = None     # fila de Driver Information con Terms Status True
+    drayage: bool = False                # Drayage Service: no lleva BCA (B-034)
     motus_error: str | None = None       # MOTUS no respondió: no se puede aprobar
     checks: list[Check] = field(default_factory=list)
 
@@ -768,6 +890,52 @@ def _numero_en_texto(numero: str, texto: str) -> bool:
     return bool(re.search(rf"(?<!\d){numero}(?!\d)", re.sub(r"[\s\-]", "", texto)))
 
 
+# ---------- Archivos del Carrier: se reconocen por el NOMBRE del archivo (bitácora B-037) ----------
+# Muchos archivos de 2024 y 2025 tienen Document Type "Other", porque esa sección no existía.
+def _nombre_archivo(f: dict) -> str:
+    return (f.get("archivo") or "").upper()
+
+
+def es_cobca(f: dict) -> bool:
+    """CO-Broker Carrier Agreement (Drayage Service)."""
+    patron = r"CO[\s_\-]*BCA|CO[\s_\-]*BROKER"
+    return bool(re.search(patron, _nombre_archivo(f)) or re.search(patron, (f.get("tipo") or "").upper()))
+
+
+def es_bca(f: dict) -> bool:
+    if es_cobca(f):
+        return False
+    nombre = _nombre_archivo(f)
+    return bool(re.search(r"(?<![A-Z])BCA(?![A-Z])|BROKER[\s_\-]*CARRIER[\s_\-]*AGREEMENT|CARRIER[\s_\-]*AGREEMENT",
+                          nombre)) or "BCA" in (f.get("tipo") or "").upper()
+
+
+def es_coi(f: dict) -> bool:
+    return bool(re.search(r"(?<![A-Z])COI|INSURANCE|CERTIFICATE|ACORD", _nombre_archivo(f))) or \
+        bool(re.search(r"COI|INSURANCE", (f.get("tipo") or "").upper()))
+
+
+def es_licencia(f: dict) -> bool:
+    """Licencia: solo por el nombre del archivo (el Document Type no dice de qué driver es)."""
+    return bool(re.search(r"(?<![A-Z])C?DL(?![A-Z])|(?<![A-Z])CLD(?![A-Z])|LICEN[CS]E|(?<![A-Z])LIC(?![A-Z])|LICENCIA|"
+                          r"CONSTANCIA", _nombre_archivo(f)))
+
+
+def es_bol_o_factura(f: dict) -> bool:
+    return bool(re.search(r"(?<![A-Z])BOL(?![A-Z])|BILL[\s_\-]*OF[\s_\-]*LADING|INVOICE|FACTURA", _nombre_archivo(f)))
+
+
+def archivo_del_driver(f: dict, driver: str) -> bool:
+    """El nombre del archivo tiene el primer nombre del driver y al menos uno de sus apellidos
+    (con un solo nombre en el Driver Assignment, basta ese)."""
+    tokens = [x for x in norm(driver).split() if len(x) >= 2 and x not in ("JR", "SR", "II", "III", "IV")]
+    if not tokens:
+        return False
+    nombre = norm(f.get("archivo"))
+    esta = lambda x: bool(re.search(rf"\b{x}\b", nombre))
+    return esta(tokens[0]) and (len(tokens) == 1 or any(esta(x) for x in tokens[1:]))
+
+
 def revisar_bca_previa(archivos, leer_pdf, carrier, motus, mc_activo: bool) -> tuple[Check, dict | None]:
     """Busca BCAs en los archivos del Carrier y decide si alguna sigue vigente frente a MOTUS.
 
@@ -775,8 +943,7 @@ def revisar_bca_previa(archivos, leer_pdf, carrier, motus, mc_activo: bool) -> t
     - Carrier con MC activo en MOTUS: la plantilla de BCA lleva el MC#. El DOT puede no aparecer.
     - Carrier sin MC, o con el MC INACTIVE en MOTUS: la BCA lleva el DOT#.
     """
-    candidatos = [f for f in archivos
-                  if "BCA" in f["tipo"].upper() or "BCA" in f["archivo"].upper()]
+    candidatos = [f for f in archivos if es_bca(f)]
     if not candidatos:
         return Check(GRUPO_BCA, "No previous BCA for this carrier", "ok",
                      "There is no BCA in the carrier's files."), None
@@ -794,9 +961,9 @@ def revisar_bca_previa(archivos, leer_pdf, carrier, motus, mc_activo: bool) -> t
             continue
         t = norm(texto)
         revision = [
-            ("legal name", bool(motus["legal"]) and norm(motus["legal"]) in t),
+            ("legal name", bool(motus["legal"]) and (norm(motus["legal"]) in t or compacto(motus["legal"]) in compacto(texto))),
             (etiqueta_id, _numero_en_texto(numero_id, texto)),
-            ("address", bool(motus["calle"]) and norm(motus["calle"]) in t),
+            ("address", bool(motus["calle"]) and (norm(motus["calle"]) in t or compacto(motus["calle"]) in compacto(texto))),
             ("signature", any(p in f["archivo"].upper() for p in ("SIGNATURE", "SIGNED", "FIRMAD"))
              or "BCA" in f["tipo"].upper()),
         ]
@@ -852,11 +1019,24 @@ def driver_firmo_en_app(conductores: list[dict] | None, asignacion: dict | None,
 def evaluar_bca(shipment_id: int, shipment: dict | None, asignacion: dict | None,
                 da: dict | None, carrier: dict | None, archivos: list[dict] | None,
                 motus_data: dict | None, leer_pdf, conductores: list[dict] | None = None,
-                motus_error: str | None = None) -> ResultadoBCA:
+                motus_error: str | None = None, nota_da: Check | None = None) -> ResultadoBCA:
     """Procedimiento de BCA + excepción de términos firmados en la app."""
     estado_app, fila = driver_firmo_en_app(conductores, asignacion, da) if carrier else ("desconocido", None)
+    drayage = bool(shipment) and es_drayage(shipment)
     res = _evaluar_bca_base(shipment_id, shipment, asignacion, da, carrier, archivos, motus_data, leer_pdf,
-                            revisar_archivos=(estado_app != "si"), motus_error=motus_error)
+                            revisar_archivos=(estado_app != "si"), motus_error=motus_error, drayage=drayage)
+    if drayage:
+        # Drayage Service: no lleva BCA sino CO-BCA (bitácora B-034). Se trata como "no enviar".
+        res.drayage = True
+        res.checks.append(Check(GRUPO_BCA, "Drayage Service: no BCA needed", "fail",
+                                "The shipment is a Drayage Service (Special Instructions, Truck Type, or Truck "
+                                "Description). A BCA is not required.",
+                                "Do not request a BCA. For the Load Confirmation, the carrier's files need a signed "
+                                "CO-Broker Carrier Agreement (CO-BCA), or a BOL or invoice if there is no CO-BCA.",
+                                _link_carrier(carrier["_id"]) if carrier else "", "View carrier files" if carrier else ""))
+    if nota_da is not None:
+        pos = max((i for i, c in enumerate(res.checks) if c.grupo == GRUPO_DA), default=-1) + 1
+        res.checks.insert(pos, nota_da)
     if carrier is None or asignacion is None:
         return res
     link_car = _link_carrier(carrier["_id"])
@@ -886,7 +1066,7 @@ def evaluar_bca(shipment_id: int, shipment: dict | None, asignacion: dict | None
 def _evaluar_bca_base(shipment_id: int, shipment: dict | None, asignacion: dict | None,
                 da: dict | None, carrier: dict | None, archivos: list[dict] | None,
                 motus_data: dict | None, leer_pdf, revisar_archivos: bool = True,
-                motus_error: str | None = None) -> ResultadoBCA:
+                motus_error: str | None = None, drayage: bool = False) -> ResultadoBCA:
     """Aplica el procedimiento de verificación de BCA de BackOffice. Función pura (sin red)."""
     res = ResultadoBCA(shipment_id, shipment, asignacion, da, carrier)
     add = res.checks.append
@@ -914,7 +1094,8 @@ def _evaluar_bca_base(shipment_id: int, shipment: dict | None, asignacion: dict 
         add(Check(GRUPO_DA, "Driver Assignment is Dispatched", "ok", "Status: Dispatched"))
     else:
         add(Check(GRUPO_DA, "Driver Assignment is Dispatched", "fail",
-                  f"Current status: {status or 'blank'}.",
+                  f"Current status: {status or 'blank'}. Only Dispatched is valid"
+                  + (" (Interested is not)." if "interested" in status.lower() else "."),
                   f"Change the status of {asignacion['da_nombre']} to Dispatched.",
                   link_da, f"Open {asignacion['da_nombre']}"))
 
@@ -996,7 +1177,8 @@ def _evaluar_bca_base(shipment_id: int, shipment: dict | None, asignacion: dict 
         add(Check(GRUPO_MOTUS, "Address matches Principal Place of Business", "ok", m["direccion"]))
     else:
         add(Check(GRUPO_MOTUS, "Address matches Principal Place of Business", "fail",
-                  f"CRM: {carrier['direccion'] or 'blank'}. MOTUS: {m['direccion'] or 'no physical address'}.",
+                  f"CRM: {carrier['direccion'] or 'blank'}. MOTUS: {m['direccion'] or 'no physical address'}. "
+                  f"Difference: {diferencias_direccion(carrier['direccion'], m) if m['direccion'] else 'no MOTUS address'}.",
                   f"Enter the address exactly as it appears in MOTUS: {m['direccion']}. "
                   "Different abbreviations and the mailing address are not accepted.",
                   link_car, "Open carrier"))
@@ -1004,7 +1186,14 @@ def _evaluar_bca_base(shipment_id: int, shipment: dict | None, asignacion: dict 
     mc_activo = False
     if mc_crm:
         auth = motus_property(m, mc_crm)
-        if auth is None:
+        broker = next((a for a in m["autoridades"] if "BROKER" in a["tipo"].upper()
+                       and digitos(a["docket"]) == mc_crm and a["estado"] == "Active"), None)
+        if auth is None and drayage and broker:
+            # Drayage Service con co-broker: trabaja con CO-BCA y su MC es de Broker (bitácora B-034)
+            mc_activo = True
+            add(Check(GRUPO_MOTUS, "MC holds Motor Carrier of Property authority", "ok",
+                      f"{broker['docket']}: Active as {broker['tipo']}. Accepted for Drayage Service with a co-broker."))
+        elif auth is None:
             otros = ", ".join(a["docket"] for a in m["autoridades"] if a["tipo"] == AUTORIDAD_PROPERTY) or "none"
             add(Check(GRUPO_MOTUS, "MC holds Motor Carrier of Property authority", "fail",
                       f"MC {mc_crm} from the CRM is not listed in MOTUS for this DOT (MOTUS shows: {otros}).",
@@ -1058,15 +1247,43 @@ def _evaluar_bca_base(shipment_id: int, shipment: dict | None, asignacion: dict 
     return res
 
 
+def elegir_asignaciones(asignaciones: list[dict], das: dict, link_ship: str) -> tuple[list[dict], Check | None]:
+    """BCA y LC (bitácora B-041). El único status válido es Dispatched, y solo un Driver Assignment puede estar en
+    Dispatched; todos los demás tienen que estar en Canceled. Interested no es válido, aunque sea el único.
+    Devuelve el Driver Assignment que se revisa y, si hay un problema con los demás, el punto que lo explica."""
+    if not asignaciones:
+        return [], None
+    estado = lambda a: (das.get(a["da_id"], {}).get("status") or a.get("status") or "").strip()
+    vivos = [a for a in asignaciones if "cancel" not in estado(a).lower()]
+    despachados = [a for a in vivos if estado(a).lower() == "dispatched"]
+    elegido = (despachados or vivos or asignaciones)[:1]
+    lista = lambda xs: ", ".join(f"{a['da_nombre']} ({estado(a) or 'no status'})" for a in xs)
+    titulo = "Only one Driver Assignment, and it is Dispatched"
+    if len(despachados) > 1:
+        return elegido, Check(GRUPO_DA, titulo, "fail", f"More than one carrier is Dispatched: {lista(despachados)}.",
+                              "Confirm which carrier you will work with. Only that Driver Assignment stays Dispatched; "
+                              "set the others to Canceled.", link_ship, "Open shipment")
+    otros = [a for a in vivos if a not in elegido]
+    if otros:
+        return elegido, Check(GRUPO_DA, titulo, "fail",
+                              f"Besides {elegido[0]['da_nombre']}, these Driver Assignments are not Canceled: {lista(otros)}.",
+                              "Only one Driver Assignment can be active, and it must be Dispatched. Set the others to "
+                              "Canceled.", link_ship, "Open shipment")
+    return elegido, None
+
+
 def pre_verificar_bca(crm: CRM, shipment_id: int, motus_fn=motus_consultar) -> list[ResultadoBCA]:
     """Recorre el CRM y MOTUS para un Shipment y devuelve un resultado por Driver Assignment."""
     shipment = crm.shipment(shipment_id)
     if shipment is None or not shipment["asignaciones"]:
         return [evaluar_bca(shipment_id, shipment, None, None, None, None, None, None)]
 
+    das = {a["da_id"]: crm.driver_assignment(a["da_id"]) for a in shipment["asignaciones"]}
+    elegidas, nota = elegir_asignaciones(shipment["asignaciones"], das,
+                                         f"{CRM_URL}/Admin/Shipments/Details/{shipment_id}")
     resultados = []
-    for asig in shipment["asignaciones"]:
-        da = crm.driver_assignment(asig["da_id"])
+    for asig in elegidas:
+        da = das[asig["da_id"]]
         carrier = archivos = motus_data = conductores = motus_error = None
         if asig["carrier_id"]:
             carrier = crm.carrier(asig["carrier_id"])
@@ -1092,7 +1309,7 @@ def pre_verificar_bca(crm: CRM, shipment_id: int, motus_fn=motus_consultar) -> l
                 return None
 
         resultados.append(evaluar_bca(shipment_id, shipment, asig, da, carrier,
-                                      archivos, motus_data, leer_pdf, conductores, motus_error))
+                                      archivos, motus_data, leer_pdf, conductores, motus_error, nota))
     return resultados
 
 
@@ -1158,7 +1375,13 @@ def _dinero(v: float) -> str:
 def _fecha(texto, referencia: date | None = None) -> date | None:
     """Fecha MM/DD/YY, MM/DD/YYYY o MM/DD (respuesta 48). Sin año, se usa el año que deja la fecha
     más cerca de la referencia (la fecha estimada del Shipment)."""
+    iso = re.search(r"(?<!\d)(\d{4})[/\-](\d{1,2})[/\-](\d{1,2})(?!\d)", texto or "")
     m = re.search(r"(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?", texto or "")
+    if iso and (not m or iso.start() <= m.start()):
+        try:
+            return date(int(iso.group(1)), int(iso.group(2)), int(iso.group(3)))
+        except ValueError:
+            return None
     if not m:
         return None
     mes, dia = int(m.group(1)), int(m.group(2))
@@ -1183,6 +1406,10 @@ def _fecha_cerca(texto: str, claves: list[str], referencia: date | None = None) 
             if f:
                 return f
     return None
+
+
+def _fmt_fh(d: datetime | None) -> str:
+    return f"{d.month}/{d.day}/{d.year} {d.hour % 12 or 12}:{d:%M} {'PM' if d.hour >= 12 else 'AM'}" if d else "an unknown date"
 
 
 def _fmt(d: date | None) -> str:
@@ -1456,7 +1683,9 @@ def revisar_loads(loads: list[dict] | None, link_ship: str) -> list[Check]:
         n = l["numero"] or "Load"
         link = f"{CRM_URL}/Admin/Loads/Details/{l.get('_id')}" if l.get("_id") else link_ship
         tipo = (l["tipo"] or "").lower()
-        desc = f"{l['make']} {l['model']}".strip()
+        desc = descripcion_load(l)
+        contenedor = "container" in tipo
+        vacio = (l.get("empty") or "").strip().upper()
 
         def add(titulo, ok, detalle, sol, estado_mal="fail"):
             checks.append(Check(GRUPO_LOADS, f"{n}: {titulo}", "ok" if ok else estado_mal, detalle,
@@ -1465,8 +1694,14 @@ def revisar_loads(loads: list[dict] | None, link_ship: str) -> list[Check]:
         add("load type and quantity", bool(l["tipo"]) and _num(l["cantidad"]) > 0,
             f"Load type: {l['tipo'] or 'blank'}. Quantity: {l['cantidad'] or 'blank'}.",
             f"Complete Load Type and Quantity on {n}.")
-        add("make or model", bool(desc), desc or "Make and Model are blank.",
-            f"Describe what is being moved in Make or Model on {n}.")
+        if contenedor and not desc and vacio in ("YES", "NO"):
+            # Contenedor: Make y Model pueden ir vacíos si Empty dice YES o NO (bitácora B-040)
+            checks.append(Check(GRUPO_LOADS, f"{n}: make or model", "info",
+                                "Container: Make and Model can be blank because Empty is set."))
+        else:
+            add("make or model", bool(desc), desc or "Make and Model are blank.",
+                f"Describe what is being moved in Make or Model on {n}."
+                + (" For a container, you can leave them blank if Empty is set to YES or NO." if contenedor else ""))
         if "pallet" in tipo or "crate" in tipo:
             concreto = [t for t in norm(desc).split() if t not in PALABRAS_EMBALAJE and not t.isdigit()]
             add("contents of the pallets or crates", bool(concreto), desc or "blank",
@@ -1493,20 +1728,63 @@ def revisar_loads(loads: list[dict] | None, link_ship: str) -> list[Check]:
             add("dimensions and weight", not faltan, medidas,
                 f"Add {', '.join(faltan)} on {n}. Dimensions must be greater than 0 for every load except cars, "
                 "pickups, and motorcycles.")
-        if "container" in tipo:
-            vacio = (l["empty"] or "").strip().upper()
+        if contenedor:
             add("empty or loaded", vacio in ("YES", "NO"), f"Empty: {l['empty'] or 'blank'}.",
                 f"Set Empty to YES or NO on {n}.")
             if vacio == "NO":
-                add("container contents", bool((l["cargo"] or "").strip() or desc), l["cargo"] or desc or "blank",
-                    f"Describe what the container carries in Cargo or in Make or Model on {n}.")
-        hitch = (l["hitch"] or "").strip()
-        if hitch and norm(hitch) not in ("NO", "NONE", "N A", "0", "FALSE"):
-            valido = HITCH_VALIDOS.get(norm(hitch).replace("PINTEL", "PINTLE")) or \
-                next((v for k, v in HITCH_VALIDOS.items() if k in norm(hitch)), None)
-            add("hitch type", bool(valido), f"Hitch: {hitch}.",
-                f"Specify the hitch type on {n}: Ball hitch, Pintle hitch, or 5th Wheel hitch.")
+                add("container contents in Cargo", bool((l.get("cargo") or "").strip()), l.get("cargo") or "Cargo is blank.",
+                    f"The container is not empty, so write what it carries in the Cargo field of {n}.")
+        chk_hitch = revisar_hitch(l, n, link)
+        if chk_hitch:
+            checks.append(chk_hitch)
     return checks
+
+
+def descripcion_load(l: dict) -> str:
+    """Make y Model juntos. Si dicen lo mismo, se acepta y se muestra una sola vez (bitácora B-040)."""
+    make, model = (l.get("make") or "").strip(), (l.get("model") or "").strip()
+    if norm(make) and norm(make) == norm(model):
+        return make
+    return f"{make} {model}".strip()
+
+
+def tipo_hitch(texto: str) -> str | None:
+    """Tipo de Hitch escrito en el texto: Ball, Pintle (o Pintel), 5th Wheel (o Fifth Wheel), con o sin la
+    palabra 'hitch'."""
+    t = norm(texto)
+    if re.search(r"\bBALL\b", t):
+        return "Ball hitch"
+    if re.search(r"\bPINT[LE]{2}\b|\bPINTLE\b|\bPINTEL\b", t):
+        return "Pintle hitch"
+    if re.search(r"\b(5|5TH|5FTH|5 TH|FIFTH|FITH|5TH TH)\s*(WHEEL|WHL|WEEL)\b", t):
+        return "5th Wheel hitch"
+    return None
+
+
+GENERICOS_HITCH = {"YES", "Y", "TRUE", "1", "HITCH", "X", "SI"}
+SIN_HITCH = {"", "NO", "NONE", "N A", "NA", "0", "FALSE", "NOT"}
+
+
+def revisar_hitch(l: dict, n: str, link: str) -> Check | None:
+    """Si la load lleva Hitch, el tipo debe estar escrito (respuesta 44, bitácora B-038). Se acepta el tipo
+    en el campo Hitch o, si ese campo solo dice que sí (o es una casilla marcada), en Notes, Make, Model o Cargo."""
+    crudo = (l.get("hitch") or "").strip()
+    valor = norm(crudo.replace("✔", " YES ").replace("✓", " YES ").replace("✖", " NO "))
+    if valor in SIN_HITCH:
+        return None
+    titulo = f"{n}: hitch type"
+    tipo = tipo_hitch(crudo)
+    if tipo:
+        return Check(GRUPO_LOADS, titulo, "ok", f"Hitch: {crudo} ({tipo}).")
+    if valor in GENERICOS_HITCH:
+        for campo, etiqueta in (("notas", "Notes"), ("make", "Make"), ("model", "Model"), ("cargo", "Cargo")):
+            tipo = tipo_hitch(l.get(campo) or "")
+            if tipo:
+                return Check(GRUPO_LOADS, titulo, "ok", f"Hitch: {crudo}. {etiqueta} says {tipo}.")
+        return Check(GRUPO_LOADS, titulo, "fail", f"Hitch: {crudo}, but the type is not written.",
+                     f"Specify the hitch type on {n}: Ball hitch, Pintle hitch, or 5th Wheel hitch.", link, f"Open {n}")
+    return Check(GRUPO_LOADS, titulo, "manual", f"Hitch: {crudo}. The app does not recognize this hitch type.",
+                 "BackOffice confirms the hitch type is specified.", link, f"Open {n}")
 
 
 # ---------- Pago del Shipment ----------
@@ -1612,18 +1890,57 @@ def revisar_montos(actual: dict, otros: list[dict] | None, orden: dict, completo
 # ---------- Direcciones (respuestas 33 a 38) ----------
 def _mismo_lugar(ciudad, estado, zip_, otro: dict) -> bool:
     return (norm(ciudad) == norm(otro.get("ciudad")) and norm(estado) == norm(otro.get("estado"))
-            and digitos(zip_)[:5] == digitos(otro.get("zip"))[:5] and bool(digitos(zip_)))
+            and zip_norm(zip_) == zip_norm(otro.get("zip")) and bool(zip_norm(zip_)))
+
+
+ESTADOS_EEUU = {
+    "AL": "ALABAMA", "AK": "ALASKA", "AZ": "ARIZONA", "AR": "ARKANSAS", "CA": "CALIFORNIA", "CO": "COLORADO",
+    "CT": "CONNECTICUT", "DE": "DELAWARE", "DC": "DISTRICT OF COLUMBIA", "FL": "FLORIDA", "GA": "GEORGIA",
+    "HI": "HAWAII", "ID": "IDAHO", "IL": "ILLINOIS", "IN": "INDIANA", "IA": "IOWA", "KS": "KANSAS",
+    "KY": "KENTUCKY", "LA": "LOUISIANA", "ME": "MAINE", "MD": "MARYLAND", "MA": "MASSACHUSETTS", "MI": "MICHIGAN",
+    "MN": "MINNESOTA", "MS": "MISSISSIPPI", "MO": "MISSOURI", "MT": "MONTANA", "NE": "NEBRASKA", "NV": "NEVADA",
+    "NH": "NEW HAMPSHIRE", "NJ": "NEW JERSEY", "NM": "NEW MEXICO", "NY": "NEW YORK", "NC": "NORTH CAROLINA",
+    "ND": "NORTH DAKOTA", "OH": "OHIO", "OK": "OKLAHOMA", "OR": "OREGON", "PA": "PENNSYLVANIA",
+    "RI": "RHODE ISLAND", "SC": "SOUTH CAROLINA", "SD": "SOUTH DAKOTA", "TN": "TENNESSEE", "TX": "TEXAS",
+    "UT": "UTAH", "VT": "VERMONT", "VA": "VIRGINIA", "WA": "WASHINGTON", "WV": "WEST VIRGINIA",
+    "WI": "WISCONSIN", "WY": "WYOMING", "PR": "PUERTO RICO",
+    # Provincias de Canadá (por ejemplo, S-040413 entrega en Nova Scotia)
+    "AB": "ALBERTA", "BC": "BRITISH COLUMBIA", "MB": "MANITOBA", "NB": "NEW BRUNSWICK",
+    "NL": "NEWFOUNDLAND AND LABRADOR", "NS": "NOVA SCOTIA", "NT": "NORTHWEST TERRITORIES", "NU": "NUNAVUT",
+    "ON": "ONTARIO", "PE": "PRINCE EDWARD ISLAND", "QC": "QUEBEC", "SK": "SASKATCHEWAN", "YT": "YUKON",
+}
+ABREV_ESTADO = {v: k for k, v in ESTADOS_EEUU.items()}
+
+
+def formas_estado(estado: str) -> list[str]:
+    """Abreviatura y nombre completo del estado: CA = California (bitácora B-036)."""
+    e = norm(estado)
+    if e in ESTADOS_EEUU:
+        return [e, ESTADOS_EEUU[e]]
+    if e in ABREV_ESTADO:
+        return [ABREV_ESTADO[e], e]
+    return [e] if e else []
+
+
+def _en_texto(valor: str, texto: str) -> bool:
+    """La palabra o frase aparece en el texto como palabras completas; tolera saltos de línea, puntuación
+    y texto pegado del PDF."""
+    v, tx = norm(valor), norm(texto)
+    if not v:
+        return False
+    return bool(re.search(rf"(?<![A-Z0-9]){re.escape(v)}(?![A-Z0-9])", tx)) or \
+        (len(v.replace(" ", "")) >= 5 and v.replace(" ", "") in tx.replace(" ", ""))
 
 
 def _lugar_en_texto(ciudad, estado, zip_, texto) -> list[str]:
-    """Partes del lugar (city, state, ZIP) que NO aparecen en el texto."""
+    """Partes del lugar (city, state, ZIP) que NO aparecen en el texto. El estado vale abreviado o con el
+    nombre completo."""
     faltan = []
-    if not (ciudad and norm(ciudad) in norm(texto)):
+    if not (ciudad and _en_texto(ciudad, texto)):
         faltan.append("city")
-    if not (estado and re.search(rf"\b{re.escape(estado.strip().upper())}\b", (texto or "").upper())):
+    if not (estado and any(_en_texto(f, texto) for f in formas_estado(estado))):
         faltan.append("state")
-    z = digitos(zip_)[:5]
-    if not (z and re.search(rf"(?<!\d){z}(?!\d)", texto or "")):
+    if not zip_en_texto(zip_, texto):
         faltan.append("ZIP")
     return faltan
 
@@ -1634,10 +1951,10 @@ def zips_special_terms(texto: str) -> list[str]:
 
 
 def es_internacional(s: dict, orden: dict | None, otros: list[dict] | None, anexo: Anexo) -> bool:
-    """Naviera o internacional (respuestas 37 y 40): check International del Shipment, destino de la
-    Orden fuera de EE. UU., o un Shipment de la Orden asignado a la naviera (AES COMPANY)."""
-    pais = norm((orden or {}).get("destino", {}).get("pais"))
-    return bool(s.get("internacional")) or (pais not in ("", "US", "USA", "UNITED STATES")) or \
+    """Naviera o internacional (respuestas 37 y 40): check International del Shipment, o un Shipment de la Orden
+    asignado a la naviera (AES COMPANY). Un destino fuera de EE. UU. por tierra (por ejemplo Canadá) no es Naviera:
+    la LC cubre todo el recorrido (bitácora B-039)."""
+    return bool(s.get("internacional")) or \
         any(anexo.es_naviera(a.get("carrier_nombre", "")) for o in (otros or []) for a in o.get("asignaciones", []))
 
 
@@ -1835,25 +2152,41 @@ def norm_dir(texto: str) -> str:
 
 
 def _direccion_en_coi(calle: str, zip_: str, texto: str) -> bool:
-    return bool(calle) and norm_dir(calle) in norm_dir(texto) and \
-        (not zip_ or bool(re.search(rf"(?<!\d){zip_}(?!\d)", texto)))
+    if not calle:
+        return False
+    en_texto = norm_dir(calle) in norm_dir(texto) or norm_dir(calle).replace(" ", "") in norm_dir(texto).replace(" ", "")
+    return en_texto and (not zip_ or zip_en_texto(zip_, texto))
 
 
 def _fechas_cobertura(texto: str, palabras: list[str]) -> tuple[date | None, date | None, str]:
     """Fechas de inicio y fin de la línea de la cobertura (por ejemplo: Cargo … 07/11/2026 07/11/2027 Limit…)."""
-    up = texto.upper()
-    for p in palabras:
-        for m in re.finditer(re.escape(p.upper()), up):
-            ventana = texto[m.end(): m.end() + 140]
-            fs = [d for d in (_fecha(x) for x in re.findall(r"\d{1,2}/\d{1,2}/\d{2,4}", ventana)) if d]
-            if len(fs) >= 2 and fs[1] > fs[0]:
-                return fs[0], fs[1], ventana
+    principal, _, columnas = (texto or "").partition(MARCA_COLUMNAS)
+    # Primero la lectura por columnas: ahí la cobertura, sus fechas y su límite quedan en la misma fila
+    for parte, en_fila in ((columnas, True), (principal, False)):
+        up = parte.upper()
+        for p in palabras:
+            for m in re.finditer(re.escape(p.upper()), up):
+                ventana = parte[m.end(): m.end() + (140 if en_fila else 260)]
+                if en_fila:
+                    ventana = ventana.split("\n")[0]
+                fs = [d for d in (_fecha(x) for x in re.findall(PATRON_FECHA, ventana)) if d]
+                if len(fs) >= 2 and fs[1] > fs[0]:
+                    return fs[0], fs[1], ventana
+                # Formulario ACORD leído sin columnas: primero salen todas las fechas de inicio y después todas
+                # las de fin (por ejemplo 7/19/2026 7/19/2026 10/28/2025 7/19/2027 7/19/2027 10/28/2026)
+                if not en_fila and len(fs) >= 4:
+                    for k in range(len(fs) // 2, 1, -1):
+                        if all(fs[i] < fs[i + k] for i in range(k)):
+                            return fs[0], fs[k], ventana
     return None, None, ""
+
+
+PATRON_FECHA = r"(?<!\d)\d{4}/\d{1,2}/\d{1,2}(?!\d)|\d{1,2}/\d{1,2}/\d{2,4}"   # 07/11/2026 o 2026/09/29 (COI de Canadá)
 
 
 def _pares_fechas(texto: str) -> list[tuple[date, date]]:
     pares = []
-    for m in re.finditer(r"(\d{1,2}/\d{1,2}/\d{2,4})\s+(\d{1,2}/\d{1,2}/\d{2,4})", texto):
+    for m in re.finditer(rf"({PATRON_FECHA})\s+({PATRON_FECHA})", texto):
         a, b = _fecha(m.group(1)), _fecha(m.group(2))
         if a and b and b > a:
             pares.append((a, b))
@@ -1896,7 +2229,8 @@ def evaluar_coi(texto: str, m: dict, s: dict, loads: list[dict], anexo: Anexo, h
     pu, entrega = _fecha(s.get("fecha_pu")), _fecha(s.get("fecha_entrega"))
 
     # Nombre: Legal Name o DBA de MOTUS (respuesta 60)
-    if (m["legal"] and norm(m["legal"]) in t) or (m.get("dba") and norm(m["dba"]) in t):
+    compacto_t = t.replace(" ", "")
+    if any(x and (norm(x) in t or compacto(x) in compacto_t) for x in (m["legal"], m.get("dba"))):
         bien.append("name matches MOTUS")
     else:
         graves.append(f"the insured name is not {m['legal']}" + (f" or {m['dba']}" if m.get("dba") else ""))
@@ -1978,8 +2312,7 @@ def revisar_coi(archivos: list[dict] | None, leer_pdf, m: dict, s: dict, loads: 
     if archivos is None:
         return [Check(GRUPO_DOCS, titulo, "manual", "The carrier's files could not be read.",
                       "BackOffice reviews the COI.", link_car, "View carrier files")]
-    cands = [f for f in archivos if "COI" in f["tipo"].upper() or "INSURANCE" in f["tipo"].upper()
-             or re.search(r"\bCOI\b|INSURANCE|CERTIFICATE", f["archivo"].upper())]
+    cands = [f for f in archivos if es_coi(f)]
     if not cands:
         return [Check(GRUPO_DOCS, titulo, "fail", "There is no COI in the carrier's files.",
                       "Upload the carrier's current COI to the carrier's files (Carrier Management Detail).",
@@ -2037,15 +2370,29 @@ def etapa_orden(orden: dict) -> str:
     return campo if campo in conocidas else (barra or campo)
 
 
-def sa_revocado(orden: dict, s: dict) -> dict | None:
-    """El último request del SA es un Revoke hecho: el SA firmado anterior ya no vale (respuesta 7)."""
-    del_sa = [r for r in (orden.get("requests") or []) + (s.get("requests") or [])
-              if re.search(r"shipper|\bSA\b", r.get("documento", ""), re.I)]
-    if not del_sa:
+def es_request_sa(r: dict) -> bool:
+    return bool(re.search(r"shipper|\bSA\b", r.get("documento", ""), re.I))
+
+
+def ultimo_revoke_sa(orden: dict, s: dict) -> dict | None:
+    """El Revoke del SA más reciente que está en Done (Requests de la Orden o del Shipment)."""
+    revokes = [r for r in (orden.get("requests") or []) + (s.get("requests") or [])
+               if es_request_sa(r) and "revoke" in r.get("tipo", "").lower()
+               and (r.get("respuesta") or "").strip().lower() == "done"]
+    return max(revokes, key=lambda r: r.get("num") or 0) if revokes else None
+
+
+def firmado_despues_de(orden: dict, momento: datetime | None) -> dict | None:
+    """Etapa de la Orden (Stage History) que muestra el SA firmado después del Revoke: Work in Progress o una
+    etapa posterior con fecha más reciente que el Revoke. Los brokers no siempre piden el SA nuevo por
+    Requests; a veces lo envían directo (bitácora B-035)."""
+    if momento is None:
         return None
-    ultimo = max(del_sa, key=lambda r: r.get("num") or 0)
-    return ultimo if "revoke" in ultimo.get("tipo", "").lower() and \
-        (ultimo.get("respuesta") or "").strip().lower() == "done" else None
+    for h in orden.get("historial") or []:
+        cuando = _fecha_hora(h.get("fecha"))
+        if h.get("etapa") in ETAPAS_FIRMADA and cuando and cuando > momento:
+            return h
+    return None
 
 
 def es_cliente_confidencial(orden: dict, confidenciales) -> bool:
@@ -2055,9 +2402,137 @@ def es_cliente_confidencial(orden: dict, confidenciales) -> bool:
     return any(norm(x) and norm(x) in norm(n) for x in confidenciales or [] for n in nombres)
 
 
+def parse_sa(texto: str) -> dict:
+    """Lee el SA firmado (Shipper Rate Confirmation) del CRM. El PDF trae cada etiqueta en una línea y el valor
+    en la siguiente: Origin Information / Address / Zip Code / State / City; Load 1: Load Type: … Make: …;
+    Total Tarriff (o Customer Pays OTR en las Órdenes OTR) y el Document History con la fecha de firma
+    (bitácora B-036)."""
+    lineas = [l.strip() for l in sin_columnas(texto).splitlines()]
+
+    def bloque(inicio: str, fin: str) -> list[str]:
+        try:
+            i = next(k for k, l in enumerate(lineas) if l.startswith(inicio))
+        except StopIteration:
+            return []
+        j = next((k for k in range(i + 1, len(lineas)) if lineas[k].startswith(fin)), len(lineas))
+        return lineas[i:j]
+
+    def lugar(bl: list[str]) -> dict:
+        datos, etiquetas = {}, {"Address:": "direccion", "Zip Code:": "zip", "State:": "estado", "City:": "ciudad"}
+        for k, l in enumerate(bl):
+            if l in etiquetas and k + 1 < len(bl):
+                valor = []
+                for v in bl[k + 1:]:
+                    if v.endswith(":") and v in ("Address:", "Zip Code:", "State:", "City:", "Contact:", "Phone:"):
+                        break
+                    valor.append(v)
+                datos[etiquetas[l]] = " ".join(valor).strip()
+        return datos
+
+    origen = lugar(bloque("Origin Information", "Destination Information"))
+    destino = lugar(bloque("Destination Information", "Load "))
+    loads, actual = [], None
+    campos = {"Load Type": "tipo", "Quantity": "cantidad", "Year": "year", "Make": "make", "Model": "model",
+              "Length (ft)": "length", "Width (ft)": "width", "Height (ft)": "height", "Weight (lbs)": "weight",
+              "Empty": "empty", "Cargo": "cargo", "Hitch": "hitch", "Drayage": "drayage"}
+    for l in lineas:
+        if re.match(r"^Load \d+:$", l):
+            actual = {}
+            loads.append(actual)
+            continue
+        if l.startswith("Special Terms"):
+            actual = None
+        if actual is not None:
+            m = re.match(r"^([A-Za-z ()]+?):\s*(.*)$", l)
+            if m and m.group(1) in campos:
+                actual[campos[m.group(1)]] = m.group(2).strip()
+
+    def monto_despues(etiqueta: str) -> float | None:
+        for k, l in enumerate(lineas):
+            if l.startswith(etiqueta):
+                for v in lineas[k + 1:k + 4]:
+                    if v.startswith("$"):
+                        return _num(v)
+        return None
+
+    firmado = None
+    for k, l in enumerate(lineas):
+        if l == "SIGNED" and k + 1 < len(lineas):
+            firmado = _fecha_hora(lineas[k + 1])
+    return {"origen": origen, "destino": destino, "loads": loads, "total": monto_despues("Total Tarriff"),
+            "otr": monto_despues("Customer Pays OTR"), "firmado": firmado,
+            "estructurado": bool(origen.get("ciudad") and destino.get("ciudad"))}
+
+
+def _mismas_palabras(valor_ship: str, valor_sa: str) -> bool:
+    """Todas las palabras del dato del Shipment están en el dato del SA (Make, Model, Cargo)."""
+    a, b = set(norm(valor_ship).split()), set(norm(valor_sa).split())
+    return bool(a) and a <= b
+
+
+def _comparar_sa_estructurado(sa: dict, s: dict, loads: list[dict], internacional: bool, monto: float,
+                              etiqueta_monto: str, otr: bool) -> tuple[list[str], list[str]]:
+    fallas, manuales = [], []
+    for etiqueta, pre, clave in [("pick-up", "origen", "origen"), ("delivery", "destino", "destino")]:
+        if clave == "destino" and internacional:
+            continue
+        en_sa = sa[clave]
+        ciudad, estado, zip_ = s.get(f"{pre}_ciudad"), s.get(f"{pre}_estado"), s.get(f"{pre}_zip")
+        dif = []
+        if norm(ciudad) != norm(en_sa.get("ciudad")):
+            dif.append(f"city {ciudad} / SA {en_sa.get('ciudad') or 'blank'}")
+        if not set(formas_estado(estado)) & set(formas_estado(en_sa.get("estado"))):
+            dif.append(f"state {estado} / SA {en_sa.get('estado') or 'blank'}")
+        if zip_norm(zip_) != zip_norm(en_sa.get("zip")):
+            dif.append(f"ZIP {zip_} / SA {en_sa.get('zip') or 'blank'}")
+        if dif:
+            fallas.append(f"the {etiqueta} does not match ({'; '.join(dif)})")
+    libres = list(sa["loads"])
+    for l in loads or []:
+        n = l.get("numero") or "load"
+        par = next((x for x in libres if _mismas_palabras(descripcion_load(l), f"{x.get('make', '')} {x.get('model', '')}")),
+                   None)
+        if par is None and len(loads) == 1 and len(libres) == 1:
+            par = libres[0]
+        if par is None:
+            fallas.append(f"{n} ({descripcion_load(l) or 'no description'}) is not on the SA")
+            continue
+        libres.remove(par)
+        dif = []
+        for etq, campo in [("make", "make"), ("model", "model")]:
+            if (l.get(campo) or "").strip() and not _mismas_palabras(l[campo], f"{par.get('make', '')} {par.get('model', '')}"):
+                dif.append(f"{etq} {l[campo]} / SA {par.get(campo) or 'blank'}")
+        if not (l.get("make") or "").strip() and not (l.get("model") or "").strip() \
+                and "container" not in (l.get("tipo") or "").lower():
+            dif.append("Make and Model are blank")
+        for etq, campo in [("quantity", "cantidad"), ("year", "year"), ("length", "length"), ("width", "width"),
+                           ("height", "height"), ("weight", "weight")]:
+            a, b = _num(l.get(campo)), _num(par.get(campo))
+            if (a > 0 or b > 0) and abs(a - b) > 0.005:
+                dif.append(f"{etq} {l.get(campo) or 'blank'} / SA {par.get(campo) or 'blank'}")
+        if (l.get("cargo") or "").strip() and not _mismas_palabras(l["cargo"], par.get("cargo", "")):
+            dif.append(f"cargo {l['cargo']} / SA {par.get('cargo') or 'blank'}")
+        if dif:
+            fallas.append(f"{n} differs from the SA ({'; '.join(dif)})")
+    monto_sa = sa["otr"] if otr else sa["total"]
+    if monto_sa is None:
+        monto_sa = sa["total"] if sa["total"] is not None else sa["otr"]
+    if monto > 0:
+        if monto_sa is None:
+            manuales.append(f"the SA's total could not be read; the order's full amount is {etiqueta_monto} {_dinero(monto)}")
+        elif abs(monto_sa - monto) > 0.005:
+            fallas.append(f"the SA's total is {_dinero(monto_sa)} and the order's current full amount is {etiqueta_monto} "
+                          f"{_dinero(monto)}")
+    return fallas, manuales
+
+
 def revisar_texto_sa(texto: str, s: dict, loads: list[dict], internacional: bool, monto: float,
-                     etiqueta_monto: str) -> tuple[list[str], list[str]]:
-    """Qué le falta al SA firmado frente al Shipment. Devuelve (fallas, revisión manual)."""
+                     etiqueta_monto: str, otr: bool = False) -> tuple[list[str], list[str]]:
+    """Qué le falta al SA firmado frente al Shipment. Devuelve (fallas, revisión manual). Con el formato del
+    CRM se compara campo por campo; si el PDF tiene otro formato, se busca cada dato en el texto."""
+    sa = parse_sa(texto)
+    if sa["estructurado"]:
+        return _comparar_sa_estructurado(sa, s, loads, internacional, monto, etiqueta_monto, otr)
     fallas, manuales = [], []
     for etiqueta, pre in [("pick-up", "origen"), ("delivery", "destino")]:
         if pre == "destino" and internacional:
@@ -2066,13 +2541,23 @@ def revisar_texto_sa(texto: str, s: dict, loads: list[dict], internacional: bool
         if faltan:
             fallas.append(f"the {etiqueta} {', '.join(faltan)} ({s.get(f'{pre}_ciudad')}, {s.get(f'{pre}_estado')} "
                           f"{s.get(f'{pre}_zip')})")
+    palabras_sa = set(norm(texto).split())
     for l in loads or []:
         n = l.get("numero") or "load"
+        contenedor = "container" in (l.get("tipo") or "").lower()
         for etiqueta, valor in [("make", l.get("make")), ("model", l.get("model"))]:
-            if (valor or "").strip() and norm(valor) not in norm(texto):
+            if not (valor or "").strip():
+                continue
+            # Cada palabra del Make y del Model debe estar en el SA, aunque el PDF las separe o cambie el orden
+            faltan_pal = [w for w in norm(valor).split() if w not in palabras_sa and not _en_texto(w, texto)]
+            if faltan_pal and not _en_texto(valor, texto):
                 fallas.append(f"the {etiqueta} of {n} ({valor})")
         if not (l.get("make") or "").strip() and not (l.get("model") or "").strip():
-            fallas.append(f"the description of {n} (Make and Model are blank on the shipment)")
+            if contenedor:
+                if (l.get("cargo") or "").strip() and not _en_texto(l["cargo"], texto):
+                    manuales.append(f"the cargo of container {n} ({l['cargo']}) was not found on the SA")
+            else:
+                fallas.append(f"the description of {n} (Make and Model are blank on the shipment)")
         if _num(l.get("year")) > 1900 and not re.search(rf"(?<!\d){int(_num(l['year']))}(?!\d)", texto):
             fallas.append(f"the year of {n} ({int(_num(l['year']))})")
         sin_ver = [etq for etq, v in [("weight", l.get("weight")), ("length", l.get("length")),
@@ -2120,14 +2605,17 @@ def revisar_orden(orden: dict, s: dict, loads: list[dict], internacional: bool, 
         return checks
 
     add(Check(GRUPO_ORDEN, "Order status allows the LC", "ok", f"{orden['numero']}: {etapa.title()}."))
-    revocado = sa_revocado(orden, s)
-    if revocado:
-        add(Check(GRUPO_ORDEN, "Signed Shipper Agreement is current", "fail",
-                  f"The Shipper Agreement was revoked ({revocado['id']}) and no new SA was requested after it, so the "
-                  "previously signed SA is no longer valid.",
-                  "Send the updated Shipper Agreement and have the customer sign it before requesting the LC.",
-                  link_orden, "Open order"))
-        return checks
+    revoke = ultimo_revoke_sa(orden, s)
+    revoke_pendiente = None     # Revoke sin prueba de que el SA se volvió a firmar después
+    if revoke:
+        momento = revoke.get("fecha")
+        nuevo = firmado_despues_de(orden, momento)
+        if nuevo:
+            add(Check(GRUPO_ORDEN, "SA signed again after the Revoke", "ok",
+                      f"{revoke['id']} revoked the SA on {_fmt_fh(momento)}. The order moved to {nuevo['etapa'].title()} "
+                      f"on {nuevo['fecha']}, so the SA at the top of Sign Documents is the new one."))
+        else:
+            revoke_pendiente = revoke
     firmados = orden.get("sign_docs") or []
     if not firmados:
         posibles = [d for d in docs_orden or []]
@@ -2164,8 +2652,32 @@ def revisar_orden(orden: dict, s: dict, loads: list[dict], internacional: bool, 
                   f"{sa['archivo']} could not be read automatically.",
                   f"BackOffice checks that the SA shows the shipment's pick-up and delivery (city, state, ZIP), its "
                   f"load, and the order's full amount ({etiqueta} {_dinero(monto)}).", link_sa, "Open the signed SA"))
+        if revoke_pendiente:
+            add(Check(GRUPO_ORDEN, "SA signed again after the Revoke", "manual",
+                      f"The SA was revoked ({revoke_pendiente['id']}) and the order's Stage History does not show a "
+                      "new signature after it.",
+                      "BackOffice confirms the signed SA is the one sent after the Revoke.", link_sa, "Open the signed SA"))
         return checks
-    fallas, manuales = revisar_texto_sa(texto, s, loads, internacional, monto, etiqueta)
+    fallas, manuales = revisar_texto_sa(texto, s, loads, internacional, monto, etiqueta, otr)
+    firma_sa = parse_sa(texto)["firmado"]
+    if revoke_pendiente and firma_sa and revoke_pendiente.get("fecha") and firma_sa > revoke_pendiente["fecha"]:
+        add(Check(GRUPO_ORDEN, "SA signed again after the Revoke", "ok",
+                  f"{revoke_pendiente['id']} revoked the SA on {_fmt_fh(revoke_pendiente['fecha'])}. The signed SA at the "
+                  f"top of Sign Documents was signed on {_fmt_fh(firma_sa)}, after the Revoke."))
+        revoke_pendiente = None
+    if revoke_pendiente:
+        cuando = f" on {_fmt_fh(revoke_pendiente.get('fecha'))}" if revoke_pendiente.get("fecha") else ""
+        if fallas:
+            add(Check(GRUPO_ORDEN, "SA signed again after the Revoke", "fail",
+                      f"The SA was revoked ({revoke_pendiente['id']}{cuando}) and the signed SA in Sign Documents does "
+                      f"not match the shipment, so it looks like the SA from before the Revoke.",
+                      "Send the updated Shipper Agreement and have the customer sign it before requesting the LC.",
+                      link_orden, "Open order"))
+        else:
+            add(Check(GRUPO_ORDEN, "SA signed again after the Revoke", "manual",
+                      f"The SA was revoked ({revoke_pendiente['id']}{cuando}). The signed SA at the top of Sign Documents "
+                      "matches the shipment, but the order's Stage History does not show when it was signed.",
+                      "BackOffice confirms the signed SA is the one sent after the Revoke.", link_sa, "Open the signed SA"))
     if fallas:
         add(Check(GRUPO_ORDEN, "Signed SA matches the shipment", "fail",
                   f"{sa['archivo']} does not show: {'; '.join(fallas)}.",
@@ -2184,47 +2696,120 @@ def revisar_orden(orden: dict, s: dict, loads: list[dict], internacional: bool, 
 
 # ---------- Licencia (respuestas 70 a 72) ----------
 def revisar_licencia(archivos: list[dict] | None, da: dict | None, s: dict, app_driver: bool,
-                     link_car: str) -> list[Check]:
+                     link_car: str, drayage: bool = False, carrier_nombre: str = "") -> list[Check]:
+    """Licencia del driver del Driver Assignment. Se busca por el NOMBRE del archivo, que debe tener el nombre
+    del driver (por ejemplo "MIGUEL VELARDE DL VELARDE TRUCKING LLC.pdf"). La licencia de otro driver del
+    mismo carrier no cuenta (bitácora B-037)."""
     titulo = "Driver's license"
+    driver = (da or {}).get("driver") or ""
+    if drayage:
+        return [Check(GRUPO_DOCS, titulo, "info", "Drayage Service: the driver's license is not required.")]
     if archivos is None:
         return [Check(GRUPO_DOCS, titulo, "manual", "The carrier's files could not be read.",
                       "BackOffice reviews the driver's license.", link_car, "View carrier files")]
-    lic = [f for f in archivos if "LICENSE" in f["tipo"].upper()
-           or re.search(r"\bDL\b|LICEN|CONSTANCIA", f["archivo"].upper())]
-    nombres = [t for t in norm((da or {}).get("driver")).split() if len(t) >= 2 and t not in SUFIJOS]
-    del_driver = [f for f in lic if any(re.search(rf"\b{t}\b", norm(f["archivo"])) for t in nombres)]
-    if lic:
-        elegidos = del_driver or lic
-        checks = [Check(GRUPO_DOCS, titulo, "ok", ", ".join(f["archivo"] for f in elegidos))]
-        checks.append(Check(GRUPO_DOCS, "Driver's license is legible and belongs to the driver", "manual",
-                            f"{', '.join(f['archivo'] for f in elegidos)}. The driver in Special Instructions and on the "
-                            f"Driver Assignment is {(da or {}).get('driver') or 'not set'}.",
-                            "BackOffice confirms the photo and name are legible and match the driver.",
-                            link_car, "View carrier files"))
-        return checks
+    lic = [f for f in archivos if es_licencia(f)]
+    del_driver = [f for f in lic if archivo_del_driver(f, driver)]
+    if del_driver:
+        nombres = ", ".join(f["archivo"] for f in del_driver)
+        return [Check(GRUPO_DOCS, titulo, "ok", f"{nombres} (driver: {driver})."),
+                Check(GRUPO_DOCS, "Driver's license is legible", "manual",
+                      f"{nombres}. Driver on the Driver Assignment and in Special Instructions: {driver or 'not set'}.",
+                      "BackOffice confirms the photo and the name are legible and belong to this driver.",
+                      link_car, "View carrier files")]
+    otros = f" The carrier's files have a license for someone else: {', '.join(f['archivo'] for f in lic[:4])}." \
+        if lic else ""
     if app_driver:
         return [Check(GRUPO_DOCS, titulo, "info",
-                      "No license in the carrier's files. It is not required for STT app drivers.")]
+                      f"No license for {driver or 'the driver'} in the carrier's files. It is not required for STT app "
+                      "drivers." + otros)]
     si = (s.get("special_instructions") or "").lower()
     alternativa = all(re.search(p, si) for p in (r"truck", r"trailer", r"plate"))
     if alternativa:
         fotos = [f for f in archivos if re.search(r"\.(png|jpe?g|heic|webp)$", f["archivo"].lower())
-                 or "PHOTO" in f["tipo"].upper() or "PICTURE" in f["tipo"].upper()]
+                 or re.search(r"PHOTO|PICTURE|TRUCK|FOTO", _nombre_archivo(f))]
         if fotos:
-            return [Check(GRUPO_DOCS, titulo, "ok", "No license photo. Special Instructions list the truck, trailer, "
-                                                    "and plate numbers instead."),
+            return [Check(GRUPO_DOCS, titulo, "ok", f"No license photo for {driver or 'the driver'}. Special "
+                                                    "Instructions list the truck, trailer, and plate numbers instead."),
                     Check(GRUPO_DOCS, "Truck photo shows the DOT#", "manual",
                           f"Photos in the carrier's files: {', '.join(f['archivo'] for f in fotos[:4])}.",
                           "BackOffice checks the truck photo and the DOT# in SaferWeb.", link_car, "View carrier files")]
         return [Check(GRUPO_DOCS, titulo, "fail",
-                      "No license photo. Special Instructions list the truck, trailer, and plate numbers, but there is no "
-                      "truck photo in the carrier's files.",
+                      f"No license photo for {driver or 'the driver'}. Special Instructions list the truck, trailer, and "
+                      "plate numbers, but there is no truck photo in the carrier's files." + otros,
                       "Upload a photo of the truck showing the DOT# to the carrier's files.", link_car, "Open carrier")]
-    return [Check(GRUPO_DOCS, titulo, "fail", "No driver's license found in the carrier's files.",
-                  "Upload a legible photo of the driver's license (Document Type: Driver's License) to the carrier's "
-                  "files. If the driver will not share it, add the driver's name and phone, truck and trailer numbers, "
-                  "and plate number to Special Instructions, and upload a truck photo showing the DOT# to the "
-                  "carrier's files.", link_car, "Open carrier")]
+    return [Check(GRUPO_DOCS, titulo, "fail",
+                  f"No driver's license for {driver or 'the driver'} in the carrier's files. The app looks for a file "
+                  "named with the driver's first name and last name and “DL” or “License”." + otros,
+                  f"Upload a legible photo of {driver or 'the driver'}'s license to the carrier's files, named with the "
+                  f"driver's name and DL (for example “{(driver or 'FIRST LAST').upper()} DL {(carrier_nombre or 'CARRIER NAME').upper()}”). "
+                  "If the driver will not share it, add the driver's name and phone, truck and trailer numbers, and plate "
+                  "number to Special Instructions, and upload a truck photo showing the DOT# to the carrier's files.",
+                  link_car, "Open carrier")]
+
+
+# ---------- Drayage Service (bitácora B-034) ----------
+def es_drayage(s: dict, loads: list[dict] | None = None) -> bool:
+    """Se identifica por Special Instructions, Truck Type o Truck Description (lo que dijo Sofía), y también por el
+    campo Drayage de la load cuando dice Yes."""
+    texto = " ".join([s.get("special_instructions") or "", s.get("truck_type") or "", s.get("truck_description") or ""])
+    return bool(re.search(r"\bdrayage\b", texto, re.I)) or \
+        any(norm(l.get("drayage")) in ("YES", "Y", "TRUE") for l in loads or [])
+
+
+# ---------- Contact Roles de la Orden (bitácora B-042) ----------
+PALABRAS_EMPRESA = (
+    r"\b(INC|INCORPORATED|LLC|L L C|CORP|CORPORATION|CO|COMPANY|LTD|LIMITED|LP|LLP|PLLC|PC|GROUP|LOGISTICS|"
+    r"TRANSPORT|TRANSPORTATION|TRUCKING|FREIGHT|SHIPPING|IMPORT|IMPORTS|EXPORT|EXPORTS|SERVICE|SERVICES|"
+    r"ENTERPRISE|ENTERPRISES|INDUSTRIES|INDUSTRIAL|MOTORS|AUTO|AUTOS|SALES|EQUIPMENT|CONSTRUCTION|FARM|FARMS|"
+    r"HOLDINGS|INTERNATIONAL|SOLUTIONS|SUPPLY|DISTRIBUTION|MANUFACTURING|TRADING|PARTNERS|ASSOCIATES|AGENCY|"
+    r"DEALER|DEALERSHIP|RENTAL|RENTALS|LEASING|SA|CV|RL|UNIVERSITY|COUNTY|DEPARTMENT|BANK|CHURCH|SCHOOL|STORE|"
+    r"MARINE|AVIATION|ENERGY|POWER|MACHINERY|TRACTOR|TRACTORS|TRAILERS|HOMES|BUILDERS|CONTRACTORS)\b")
+
+
+def es_empresa(nombre: str) -> bool:
+    return bool(re.search(PALABRAS_EMPRESA, norm(nombre)))
+
+
+def nombre_y_apellido(nombre: str) -> bool:
+    """Al menos dos palabras de dos letras o más (nombre y apellido). Una inicial sola no cuenta como apellido."""
+    return len([w for w in norm(nombre).split() if len(w) >= 2 and not w.isdigit()]) >= 2
+
+
+def cliente_particular(cliente: str) -> bool:
+    """El cliente es una persona, no una compañía. En el CRM el campo Customer se ve como 'Compañía (Contacto)';
+    para un particular, las dos partes son la misma persona. Sin paréntesis, se decide por las palabras típicas
+    de una compañía (Inc, LLC, Logistics…)."""
+    m = re.match(r"^\s*(.*?)\s*\((.*)\)\s*$", cliente or "")
+    if m:
+        empresa, contacto = m.group(1), m.group(2)
+        if es_empresa(empresa):
+            return False
+        return norm(empresa) == norm(contacto) or not norm(empresa)
+    return bool(norm(cliente)) and not es_empresa(cliente)
+
+
+def revisar_contact_roles(orden: dict, link_orden: str) -> list[Check]:
+    """Cliente particular: el cliente agregado en Contact Roles debe tener nombre y apellido."""
+    cliente = orden.get("cliente") or ""
+    if not cliente_particular(cliente):
+        return []
+    titulo = "Customer has first and last name in Contact Roles"
+    personas = [c for c in orden.get("contactos") or [] if c.get("nombre") and not es_empresa(c["nombre"])]
+    if not personas:
+        nombre = re.sub(r"\s*\(.*\)\s*$", "", cliente)
+        ok = nombre_y_apellido(nombre)
+        return [Check(GRUPO_ORDEN, titulo, "ok" if ok else "fail",
+                      f"Individual customer: {cliente}. There is no contact in Contact Roles.",
+                      "" if ok else "Add the customer to the order's Contact Roles with first and last name.",
+                      link_orden, "Open order")]
+    sin_apellido = [c for c in personas if not nombre_y_apellido(c["nombre"])]
+    lista = ", ".join(f"{c['nombre']} ({c.get('rol') or 'no role'})" for c in personas)
+    if sin_apellido:
+        return [Check(GRUPO_ORDEN, titulo, "fail",
+                      f"Individual customer. Missing a last name: "
+                      f"{', '.join(c['nombre'] for c in sin_apellido)}.",
+                      "Write the customer's first and last name in the order's Contact Roles.", link_orden, "Open order")]
+    return [Check(GRUPO_ORDEN, titulo, "ok", f"Individual customer: {lista}.")]
 
 
 # ---------- Motor de la LC ----------
@@ -2235,7 +2820,8 @@ def evaluar_lc(shipment_id: int, shipment: dict | None, asignacion: dict | None,
                otros_completos: bool = True, docs_orden: list[dict] | None = None,
                overrides: list[dict] | None = None, anexo: Anexo | None = None, confidenciales=(),
                solicitante: str = "", solicitante_origen: str = "", hoy: date | None = None,
-               nota_da: Check | None = None, error_orden: str | None = None) -> ResultadoLC:
+               nota_da: Check | None = None, error_orden: str | None = None,
+               docs_shipment: list[dict] | None = None) -> ResultadoLC:
     """Aplica el procedimiento de Load Confirmation de BackOffice. Función pura (sin red)."""
     anexo = anexo or Anexo()
     leer_pdf = leer_pdf or (lambda guid: None)
@@ -2260,12 +2846,16 @@ def evaluar_lc(shipment_id: int, shipment: dict | None, asignacion: dict | None,
     ctx = ContextoOverride(overrides or [], anexo.aprobadores(s.get("supervisor", "")), dueno_pide,
                            s.get("supervisor", ""), link_ship)
     casos = []
+    drayage = es_drayage(s, loads)
+    if drayage:
+        casos.append("Drayage Service")
     if internacional:
         casos.append("International (Naviera)")
 
     # 1. Orden y SA firmado
     res.checks += revisar_orden(orden, s, loads or [], internacional, otros, docs_orden, leer_pdf,
                                 confidenciales, ctx, link_orden)
+    res.checks += revisar_contact_roles(orden, link_orden)
 
     # 2. Shipment info
     for etiqueta, campo in [("Estimated pick-up date", "fecha_pu"), ("Estimated delivery date", "fecha_entrega")]:
@@ -2303,15 +2893,24 @@ def evaluar_lc(shipment_id: int, shipment: dict | None, asignacion: dict | None,
     res.checks += revisar_direcciones(s, orden, loads or [], internacional, ctx, link_ship)
 
     # 6. Truck y Special Instructions
-    add(Check(GRUPO_TRUCK, "Truck type", "ok" if s.get("truck_type") else "fail", s.get("truck_type") or "Blank.",
-              "" if s.get("truck_type") else "Select the truck type in Truck Specifications.", link_ship, "Open shipment"))
+    if drayage and not s.get("truck_type"):
+        add(Check(GRUPO_TRUCK, "Truck type", "info", "Drayage Service: the truck type is not required."))
+    else:
+        add(Check(GRUPO_TRUCK, "Truck type", "ok" if s.get("truck_type") else "fail", s.get("truck_type") or "Blank.",
+                  "" if s.get("truck_type") else "Select the truck type in Truck Specifications.", link_ship,
+                  "Open shipment"))
     permitidos = {"Shipment Owner": s.get("owner", ""), "Dispatcher": s.get("dispatcher", "")}
     if solicitante_origen == "manual" and solicitante:
         permitidos["requester"] = solicitante
     contados = [x for x in (otros or [s]) if not (es_cancelado(x) and not es_tonu(x))]
     una_sola = otros is not None and len(contados) <= 1
-    si_checks = revisar_si(s, da if asignacion else None, link_ship, permitidos, anexo.contactos(s.get("supervisor", "")),
-                           una_sola, zips_special_terms(orden.get("special_terms", "")))
+    if drayage:
+        si_checks = [Check(GRUPO_SI, "Special Instructions", "info",
+                           "Drayage Service: Special Instructions can say only “Drayage Service”.")]
+    else:
+        si_checks = revisar_si(s, da if asignacion else None, link_ship, permitidos,
+                               anexo.contactos(s.get("supervisor", "")), una_sola,
+                               zips_special_terms(orden.get("special_terms", "")))
     for c in si_checks:
         if c.titulo == "Truck type matches Special Instructions":
             c.grupo = GRUPO_TRUCK
@@ -2321,7 +2920,7 @@ def evaluar_lc(shipment_id: int, shipment: dict | None, asignacion: dict | None,
     if nota_da is not None:
         add(nota_da)
     base = _evaluar_bca_base(shipment_id, shipment, asignacion, da, carrier, archivos, motus_data, leer_pdf,
-                             revisar_archivos=False, motus_error=motus_error)
+                             revisar_archivos=False, motus_error=motus_error, drayage=drayage)
     res.checks += base.checks
     res.motus, res.motus_error = base.motus, base.motus_error
     if asignacion is not None:
@@ -2346,8 +2945,34 @@ def evaluar_lc(shipment_id: int, shipment: dict | None, asignacion: dict | None,
                       "BackOffice confirms the carrier appears in Carrier Management, or that the driver's profile was "
                       "added to the shipment's Chatter.", link_ship, "Open shipment"))
 
+        # Drayage Service: CO-Broker Carrier Agreement en lugar de BCA (bitácora B-034)
+        respaldo = [f for f in (archivos or []) + list(docs_shipment or []) if es_bol_o_factura(f)]
+        if drayage:
+            add(Check(GRUPO_DOCS, "Signed BCA", "info", "Drayage Service: a BCA is not required."))
+            cobca = [f for f in (archivos or []) + list(docs_shipment or []) + list(s.get("sign_docs") or [])
+                     if es_cobca(f)]
+            if cobca:
+                add(Check(GRUPO_DOCS, "CO-Broker Carrier Agreement (CO-BCA)", "ok", ", ".join(f["archivo"] for f in cobca)))
+                add(Check(GRUPO_DOCS, "CO-BCA is signed and current", "manual", ", ".join(f["archivo"] for f in cobca),
+                          "BackOffice checks the CO-BCA.", link_car, "View carrier files"))
+            elif respaldo:
+                add(Check(GRUPO_DOCS, "CO-Broker Carrier Agreement (CO-BCA)", "ok",
+                          f"No CO-BCA. A BOL or invoice is attached instead: {', '.join(f['archivo'] for f in respaldo)}."))
+                add(Check(GRUPO_DOCS, "BOL or invoice instead of the CO-BCA", "manual",
+                          ", ".join(f["archivo"] for f in respaldo), "BackOffice checks the BOL or invoice.",
+                          link_car, "View carrier files"))
+            elif archivos is None:
+                add(Check(GRUPO_DOCS, "CO-Broker Carrier Agreement (CO-BCA)", "manual",
+                          "The carrier's files could not be read.", "BackOffice checks the CO-BCA.", link_car,
+                          "View carrier files"))
+            else:
+                add(Check(GRUPO_DOCS, "CO-Broker Carrier Agreement (CO-BCA)", "fail",
+                          "Drayage Service needs a CO-Broker Carrier Agreement, and there is none in the carrier's files "
+                          "or the shipment's documents. There is no BOL or invoice either.",
+                          "Upload the signed CO-BCA (with “CO-BCA” in the file name) to the carrier's files. If there is "
+                          "no CO-BCA, attach the BOL or the invoice.", link_car, "Open carrier"))
         # BCA: basta con que esté en los archivos del Carrier (respuestas 68, 69 y 80)
-        if estado_app == "si":
+        elif estado_app == "si":
             res.terminos_app = fila
             add(Check(GRUPO_DOCS, "Signed BCA", "ok",
                       f"{fila['nombre']} accepted the terms in the STT app (Terms Status: True). It counts as a signed BCA."))
@@ -2359,7 +2984,7 @@ def evaluar_lc(shipment_id: int, shipment: dict | None, asignacion: dict | None,
                           "BackOffice checks the BCA.", link_car, "View carrier files"))
             else:
                 chk, previa = revisar_bca_previa(archivos, leer_pdf, carrier, m, mc_activo)
-                bca_en_ship = [d for d in s.get("sign_docs") or [] if "BCA" in d["archivo"].upper()]
+                bca_en_ship = [d for d in s.get("sign_docs") or [] if es_bca(d)]
                 if previa is not None:
                     add(Check(GRUPO_DOCS, "Signed BCA", "ok", chk.detalle, "", chk.link, chk.link_texto))
                 elif chk.estado == "manual":
@@ -2375,14 +3000,26 @@ def evaluar_lc(shipment_id: int, shipment: dict | None, asignacion: dict | None,
                               "before the LC. Request the BCA first (use the Verify BCA tab).",
                               chk.link or link_car, chk.link_texto or "Open carrier"))
 
-        if m is not None:
+        hay_coi = archivos is None or any(es_coi(f) for f in archivos)
+        if drayage and not hay_coi:
+            if respaldo:
+                add(Check(GRUPO_DOCS, "Certificate of Insurance (COI)", "ok",
+                          f"Drayage Service: no COI, but a BOL or invoice is attached: "
+                          f"{', '.join(f['archivo'] for f in respaldo)}."))
+            else:
+                add(Check(GRUPO_DOCS, "Certificate of Insurance (COI)", "fail",
+                          "Drayage Service: there is no COI and no BOL or invoice.",
+                          "Upload the carrier's COI to the carrier's files, or attach the BOL or the invoice.",
+                          link_car, "Open carrier"))
+        elif m is not None:
             res.checks += revisar_coi(archivos, leer_pdf, m, s, loads or [], anexo, hoy,
                                       monto_cobertura_requerido(orden.get("special_terms", "")), ctx, link_car)
             add(Check(GRUPO_DOCS, "COI looks original and is signed", "manual",
                       "A suspicious format or a pasted signature needs an approved override.",
                       "BackOffice checks that the COI looks original and the signature is not pasted.",
                       link_car, "View carrier files"))
-        res.checks += revisar_licencia(archivos, da, s, app_driver, link_car)
+        res.checks += revisar_licencia(archivos, da, s, app_driver, link_car, drayage,
+                                       carrier.get("nombre") or asignacion.get("carrier_nombre", ""))
 
         # Caso 1: driver de la app (Send To App marcado, respuestas 75 y 76)
         if app_driver:
@@ -2420,24 +3057,6 @@ def solicitante_lc(shipment: dict | None, manual: str) -> tuple[str, str]:
     if owner:
         return owner, "owner+dispatcher"
     return disp, "dispatcher" if disp else ""
-
-
-def elegir_asignaciones(asignaciones: list[dict], das: dict, link_ship: str) -> tuple[list[dict], Check | None]:
-    """Respuestas 73 y 74: solo se le manda LC al Driver Assignment en Dispatched. Si hay más de uno en
-    Dispatched o Interested, el broker debe confirmar con cuál trabaja."""
-    estado = lambda a: (das.get(a["da_id"], {}).get("status") or a.get("status") or "").strip().lower()
-    activos = [a for a in asignaciones if estado(a) in ("dispatched", "interested")]
-    if len(activos) > 1:
-        nombres = ", ".join(f"{a['da_nombre']} ({estado(a).title()})" for a in activos)
-        return activos[:1], Check(GRUPO_DA, "Only one Driver Assignment is active", "fail",
-                                  f"More than one driver is Dispatched or Interested: {nombres}.",
-                                  "Confirm which driver you will work with. Only that Driver Assignment stays Dispatched; "
-                                  "set the others to Canceled.", link_ship, "Open shipment")
-    despachados = [a for a in asignaciones if estado(a) == "dispatched"]
-    if despachados:
-        return despachados, None
-    vivos = [a for a in asignaciones if "cancel" not in estado(a)]
-    return (vivos or asignaciones)[:1], None
 
 
 def pre_verificar_lc(crm: CRM, shipment_id: int, motus_fn=motus_consultar, anexo: Anexo | None = None,
@@ -2529,12 +3148,27 @@ def pre_verificar_lc(crm: CRM, shipment_id: int, motus_fn=motus_consultar, anexo
                 pass
         overrides.append(o)
 
+    # Fecha de los Revoke del SA, para saber si el SA se volvió a firmar después (bitácora B-035)
+    if orden is not None:
+        for r in (orden.get("requests") or []) + (shipment.get("requests") or []):
+            if es_request_sa(r) and "revoke" in r.get("tipo", "").lower() and r.get("num"):
+                try:
+                    d = crm.request(r["num"])
+                    r["fecha"] = d.get("fecha_modificado") or d.get("fecha_creado")
+                except Exception:
+                    r["fecha"] = None
+
+    try:
+        docs_shipment = crm.documentos_shipment(shipment_id, shipment["_token"])
+    except Exception:
+        docs_shipment = []
+
     solicitante, origen = solicitante_lc(shipment, manual)
     if not shipment["asignaciones"]:
         return [evaluar_lc(shipment_id, shipment, None, None, None, None, None, leer_pdf, None, loads,
                            orden=orden, otros=otros, otros_completos=completos, docs_orden=docs_orden,
                            overrides=overrides, anexo=anexo, confidenciales=confidenciales, solicitante=solicitante,
-                           solicitante_origen=origen, error_orden=error_orden)]
+                           solicitante_origen=origen, error_orden=error_orden, docs_shipment=docs_shipment)]
 
     das = {a["da_id"]: crm.driver_assignment(a["da_id"]) for a in shipment["asignaciones"]}
     elegidas, nota = elegir_asignaciones(shipment["asignaciones"], das, link_ship)
@@ -2562,7 +3196,8 @@ def pre_verificar_lc(crm: CRM, shipment_id: int, motus_fn=motus_consultar, anexo
                                      conductores, loads, motus_error, orden=orden, otros=otros,
                                      otros_completos=completos, docs_orden=docs_orden, overrides=overrides,
                                      anexo=anexo, confidenciales=confidenciales, solicitante=solicitante,
-                                     solicitante_origen=origen, nota_da=nota, error_orden=error_orden))
+                                     solicitante_origen=origen, nota_da=nota, error_orden=error_orden,
+                                     docs_shipment=docs_shipment))
     return resultados
 
 
