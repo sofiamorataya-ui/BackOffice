@@ -1,4 +1,4 @@
-[Uploading REGISTRO.md…]()
+[REGISTRO.md](https://github.com/user-attachments/files/33738668/REGISTRO.md)
 # Registro
 
 Historial de versiones y entradas de la bitácora. La guía de uso y el diagnóstico rápido están en el [README](README.md).
@@ -7,6 +7,7 @@ Historial de versiones y entradas de la bitácora. La guía de uso y el diagnós
 
 | Versión | Fecha | Cambios | Entradas |
 |---|---|---|---|
+| 2.7.0 | 2026-10-20 | Ajustes de Sofía probados con Shipments reales (S-040341, S-040418, S-040415, S-040413): Drayage Service con CO-BCA; SA leído campo por campo (estados con nombre completo, fecha de firma, Total Tarriff); SA nuevo después del Revoke sin request; Hitch como "5fth wheel"; archivos reconocidos por el nombre y licencia del driver correcto; código postal de Canadá y dirección más reciente de MOTUS; solo un Driver Assignment en Dispatched (BCA y LC); contenedores sin Make y Model; Contact Roles de clientes particulares; lista completa de Shipments de la Orden. | B-034 a B-045 |
 | 2.6.0 | 2026-10-09 | LC versión 2 con las 82 respuestas de Sofía: Orden y SA firmado, Revoke, Overrides con quién aprueba por franquicia, excepción del dueño de franquicia, montos de todos los Shipments de la Orden, direcciones, loads repetidas, COI por tipo de camión y vigencia, licencia, varios Driver Assignments, driver de la app. **Solo lo verde recibe código**; amarillo y rojo frenan. Lo que BackOffice revisa a mano solo lo ve BackOffice (en Validate code). Anexo editable `anexo.json`. Borrador de la política de LC en inglés para Sofía. | B-027 a B-033 |
 | 2.5.0 | 2026-10-08 | Nueva pestaña **Verify LC**: pre-verificación de Load Confirmation con Shipment Info, Special Instructions, Loads, pago (y plantilla de LC), truck, Driver Assignment, Carrier, MOTUS, BCA, COI, licencia y driver de la app. Lo de la Orden y el SA queda como revisión manual. Códigos `LC-` y estadísticas por documento. | B-024, B-025, B-026 |
 | 2.4.1 | 2026-10-08 | La consulta a MOTUS abre primero la página pública, reintenta 3 veces y, si MOTUS no responde, muestra "Could not finish the check" en lugar de un error técnico. Esos casos no se registran como solicitudes frenadas. | B-023 |
@@ -21,6 +22,114 @@ Historial de versiones y entradas de la bitácora. La guía de uso y el diagnós
 
 ## Entradas
 
+### B-045 · Pruebas de la versión 2.7.0
+- **Fecha:** 2026-10-20
+- **Tipo:** Hallazgo
+- **Estado:** Vigente
+- **Versión:** 2.7.0
+- **Qué se probó:** 73 escenarios de LC (regresión), 44 pruebas de los ajustes de esta versión y 14 comprobaciones con los cuatro Shipments reales que dio Sofía, leídos del CRM (solo lectura) con la sesión de Sofía en el navegador integrado de la app de Claude, más MOTUS y los PDF reales (SA firmados, COI, BCA y CO-BCA). También la pestaña BCA con los mismos cuatro.
+- **Resultado con los Shipments reales:**
+  - S-040341 (Drayage): se aprueba. Antes frenaba por Special Instructions, BCA, licencia y MC.
+  - S-040418: SA firmado después del Revoke reconocido, SA coincide, Hitch reconocido. Solo frena la licencia: en los archivos del Carrier no hay ninguna con el nombre de Chuck Roundy (hay de "CEDAR", de Kentucky y una IMG_6343.jpeg sin nombre).
+  - S-040415: Hitch "5fth wheel" y SA bien. Solo frena la licencia: hay licencias de otros drivers de USCAN, ninguna de Yurii Halushko.
+  - S-040413: dirección de Canadá y SA bien. Solo frena la licencia: el único archivo de licencia se llama "vs_1USfM2D1k39FAQFT9LxBdjvX_front.jpg", sin el nombre del driver.
+- **Cómo repetirlas:** los scripts están fuera del repo (carpeta de trabajo de Claude). Para volver a correrlas con casos nuevos, pedir a Claude que lea los Shipments con el navegador integrado.
+
+### B-044 · Lectura de PDF: segunda lectura por columnas
+- **Fecha:** 2026-10-20
+- **Tipo:** Falla
+- **Estado:** Resuelto
+- **Versión:** 2.7.0
+- **Síntoma:** En COI con formulario ACORD, pypdf pega las palabras ("InfinityDevelopment LLC", "765NOakSt") y mezcla las columnas, así que el nombre no se encontraba y las fechas de la cobertura salían de otra fila. Los COI de Canadá traen fechas AAAA/MM/DD.
+- **Solución:** `texto_pdf` agrega una segunda lectura por columnas (pypdf 4 o más, `requirements.txt` ahora pide `pypdf>=4.2`). Nombre y dirección se comparan también sin espacios. Las fechas aceptan MM/DD/AAAA y AAAA/MM/DD. Si el ACORD trae primero todas las fechas de inicio y después las de fin, se emparejan por posición.
+- **Cómo verificar:** S-040418 debe mostrar el COI de INFINITY "valid 7/19/2026 to 7/19/2027".
+
+### B-043 · Todos los Shipments de la Orden
+- **Fecha:** 2026-10-20
+- **Tipo:** Hallazgo
+- **Estado:** Resuelto
+- **Versión:** 2.7.0
+- **Hallazgo:** La página View All de la Orden no trae los Shipments en el HTML: los carga con `GET /Admin/Order/OrderList?opportunityId=<quoteId>` (JSON). Con eso se vio que O-076869 tiene un cuarto Shipment, S-039243.
+- **Solución:** `CRM.ids_shipments_orden` lee ese JSON. Si falla, se usa la tarjeta Shipments (máximo 3) y los montos van a revisión manual.
+
+### B-042 · Contact Roles de clientes particulares
+- **Fecha:** 2026-10-20
+- **Tipo:** Decisión
+- **Estado:** Vigente
+- **Versión:** 2.7.0
+- **Regla de Sofía:** Si el cliente es particular (no una compañía), el cliente agregado en Contact Roles debe tener nombre y apellido.
+- **Cómo lo reconoce la app:** el campo Customer de la Orden se ve como "Compañía (Contacto)". Es particular si las dos partes son la misma persona (por ejemplo "Fabio Moretti (Fabio Moretti)") o, sin paréntesis, si no tiene palabras de compañía (Inc, LLC, Logistics, Trucking…). Cada contacto de Contact Roles que no sea una compañía debe tener al menos dos palabras de dos letras o más.
+
+### B-041 · Driver Assignments: solo uno, en Dispatched (BCA y LC)
+- **Fecha:** 2026-10-20
+- **Tipo:** Decisión
+- **Estado:** Vigente
+- **Versión:** 2.7.0
+- **Regla de Sofía:** El único status válido es Dispatched y solo un carrier puede estar en Dispatched; los demás deben estar en Canceled. Interested no es válido, aunque sea el único.
+- **Solución:** `elegir_asignaciones` se usa ahora en BCA y LC. Se revisa el Driver Assignment en Dispatched y, si hay otro que no está en Canceled, aparece en rojo "Only one Driver Assignment, and it is Dispatched".
+
+### B-040 · Contenedores sin Make y Model; Make y Model iguales
+- **Fecha:** 2026-10-20
+- **Tipo:** Decisión
+- **Estado:** Vigente
+- **Versión:** 2.7.0
+- **Regla de Sofía:** Load Type Container: Make y Model pueden ir vacíos si Empty dice YES o NO; si dice NO, el campo Cargo debe decir qué lleva. Make y Model con el mismo texto se acepta.
+- **Solución:** `revisar_loads` y `descripcion_load`. En el SA, un contenedor sin Make y Model no se marca como falta de descripción.
+
+### B-039 · Dirección: código postal de Canadá y la dirección vigente de MOTUS
+- **Fecha:** 2026-10-20
+- **Tipo:** Falla
+- **Estado:** Resuelto
+- **Versión:** 2.7.0
+- **Síntoma:** S-040413 (2210653 ALBERTA LTD): la app decía que faltaba "R7" en MOTUS. La dirección es "2007 207 ST NW, EDMONTON, AB, T6M 1R7, CA".
+- **Causa:** La app cortaba el código postal a 5 caracteres ("T6M 1R7" quedaba "T6M 1") y no entendía direcciones de Canadá. Además, MOTUS puede traer varias filas activas del mismo tipo (por ejemplo INFINITY DEVELOPMENT trae 765 N OAK ST como principal y 1091 FIG CIR como no principal) y la app tomaba la primera.
+- **Solución:** `zip_norm` (EE. UU.: 5 dígitos; Canadá y otros: el código completo), `partir_direccion_crm` acepta Canadá, y `motus_resumen` toma la dirección principal más reciente. La comparación ignora espacios, guiones y "#", y el error dice qué palabra está solo en un lado. Provincias de Canadá agregadas (NS = Nova Scotia).
+- **Cambio relacionado:** Un destino fuera de EE. UU. por tierra ya no se trata como Naviera (corrige una decisión de B-033): Naviera es solo el check International o un Shipment de la Orden con AES COMPANY.
+
+### B-038 · Hitch escrito de otras formas
+- **Fecha:** 2026-10-20
+- **Tipo:** Falla
+- **Estado:** Resuelto
+- **Versión:** 2.7.0
+- **Síntoma:** S-040415 pedía especificar el Hitch y el campo decía "5fth wheel".
+- **Solución:** `tipo_hitch` reconoce Ball, Pintle o Pintel, y 5th Wheel en sus variantes (5fth, fifth, 5 th, whl), con o sin la palabra hitch. Si el campo solo dice que sí, busca el tipo en Notes, Make, Model o Cargo. Un tipo que la app no conoce (por ejemplo Gooseneck) va a revisión manual.
+
+### B-037 · BCA, COI y licencia se reconocen por el nombre del archivo
+- **Fecha:** 2026-10-20
+- **Tipo:** Falla
+- **Estado:** Resuelto
+- **Versión:** 2.7.0
+- **Síntoma:** La app se basaba en el Document Type. Los archivos de 2024 y 2025 tienen Document Type "Other", y una licencia de otro driver del mismo carrier se tomaba como válida.
+- **Solución:** `es_bca`, `es_coi`, `es_licencia`, `es_cobca` y `es_bol_o_factura` miran el nombre del archivo (BCA, COI, COIDoc, DL, CDL, License…). La licencia solo cuenta si el nombre del archivo tiene el primer nombre y un apellido del driver del Driver Assignment. El Document Type "Driver's License" solo no alcanza.
+- **Cómo verificar:** En S-040415 el mensaje lista las licencias de otros drivers que encontró.
+
+### B-036 · SA firmado: comparación campo por campo
+- **Fecha:** 2026-10-20
+- **Tipo:** Falla
+- **Estado:** Resuelto
+- **Versión:** 2.7.0
+- **Síntoma:** "Signed SA matches the shipment" salía siempre en rojo.
+- **Causa:** El SA del CRM escribe el estado completo ("Oklahoma") y el Shipment lo abrevia ("OK").
+- **Solución:** `parse_sa` lee el SA por campos: Origin y Destination (Address, Zip Code, State, City), cada Load (Load Type, Quantity, Year, Make, Model, medidas, peso, Cargo, Hitch), Total Tarriff (o Customer Pays OTR) y la fecha de SIGNED del Document History. Se compara campo por campo; el estado vale abreviado o completo. Si un SA no tiene ese formato, se busca cada dato en el texto como antes. El detalle dice exactamente qué no coincide.
+
+### B-035 · SA nuevo después de un Revoke
+- **Fecha:** 2026-10-20
+- **Tipo:** Falla
+- **Estado:** Resuelto
+- **Versión:** 2.7.0
+- **Síntoma:** S-040418: la app no reconocía el SA firmado después del Revoke R-146187, porque los brokers no siempre piden el SA nuevo por Requests; lo envían directo.
+- **Solución:** La app lee la fecha del Revoke (Last Modified del request) y la compara con la fecha de firma del SA (Document History) y con el Stage History de la Orden. Si el SA se firmó después del Revoke, vale. Si no hay fecha y el SA coincide con el Shipment, va a revisión manual; si no coincide, frena.
+
+### B-034 · Drayage Service
+- **Fecha:** 2026-10-20
+- **Tipo:** Decisión
+- **Estado:** Vigente
+- **Versión:** 2.7.0
+- **Regla de Sofía (ejemplo S-040341):** No se necesita licencia; Special Instructions pueden decir solo "Drayage Service"; la BCA no es obligatoria pero sí un CO-Broker Carrier Agreement; el Truck Type no es obligatorio; si no hay CO-BCA o COI, pueden adjuntar BOL o Invoice.
+- **Cómo se reconoce:** "Drayage" en Special Instructions, Truck Type o Truck Description. También cuando el campo Drayage de la load dice Yes (lo agregó la app; el SA de S-040341 lo muestra).
+- **Solución:** En LC no se piden licencia, Truck Type ni Special Instructions completas; se pide el CO-BCA (por nombre: "CO-BCA", "Co-Broker", "Co-Brokerage") en los archivos del Carrier o del Shipment, o un BOL o Invoice. Sin COI, el BOL o Invoice también sirve. En la pestaña BCA aparece "Do not send: Drayage Service".
+- **Decisión pendiente de confirmar:** En S-040341 el carrier es un co-broker: su MC es de "Broker of Property", no de Motor Carrier. Para Drayage la app acepta un MC activo de Broker como válido (incluida la regla de ruta). Confirmar con Sofía.
+
 ### B-033 · Decisiones tomadas donde las respuestas dejaban algo abierto
 - **Fecha:** 2026-10-09
 - **Tipo:** Decisión
@@ -30,7 +139,7 @@ Historial de versiones y entradas de la bitácora. La guía de uso y el diagnós
   - Lo que la app no puede leer (PDF escaneado, una sección del CRM, el detalle de un Override) o un caso sin regla pasa con código y queda en la revisión manual de BackOffice (es el "caso no mapeado" de la respuesta 78).
   - Excepción del dueño de franquicia: aplica si el Shipment Owner es dueño y el Shipment no tiene Dispatcher Id, o si el dueño escribe su nombre en "Requested by". Solo los 11 dueños del anexo; los supervisores de la Main branch no.
   - COI vencido (nunca se aprueba con Override): la cobertura terminó antes de hoy o antes del Estimated Pickup Date. Si termina entre el pick-up y 10 días después del delivery, se puede aprobar con Override.
-  - International/Naviera: check International del Shipment, destino de la Orden fuera de US, o un Shipment de la Orden asignado a AES COMPANY.
+  - International/Naviera: check International del Shipment o un Shipment de la Orden asignado a AES COMPANY. (En 2.6.0 también contaba un destino fuera de US; se quitó en 2.7.0, ver B-039.)
   - Revoke: si el último request del SA (Orden o Shipment) es un Revoke en Done, el SA firmado no vale.
   - Override con Response Done pero Reason "Rejected" o "Denied": no cuenta.
   - SA: ciudad, estado, ZIP, Make, Model, año y Full Amount frenan si faltan; peso y medidas van a revisión manual hasta tener un SA de ejemplo.
