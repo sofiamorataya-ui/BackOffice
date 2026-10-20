@@ -18,7 +18,7 @@ import streamlit as st
 import stt_core as core
 
 RAIZ = Path(__file__).parent
-VERSION = "2.7.0"  # Cambiala en cada entrega y anotala en bitacora/REGISTRO.md
+VERSION = "2.7.1"  # Cambiala en cada entrega y anotala en bitacora/REGISTRO.md
 ZONA = ZoneInfo("America/Guatemala")
 
 st.set_page_config(page_title="STT BackOffice", page_icon=str(RAIZ / "assets" / "stt_icon.png"),
