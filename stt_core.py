@@ -1766,8 +1766,8 @@ SIN_HITCH = {"", "NO", "NONE", "N A", "NA", "0", "FALSE", "NOT"}
 
 
 def revisar_hitch(l: dict, n: str, link: str) -> Check | None:
-    """Si la load lleva Hitch, el tipo debe estar escrito (respuesta 44, bitácora B-038). Se acepta el tipo
-    en el campo Hitch o, si ese campo solo dice que sí (o es una casilla marcada), en Notes, Make, Model o Cargo."""
+    """Si la load lleva Hitch, el tipo debe estar escrito en el campo Hitch (respuesta 44, bitácora B-038).
+    Si el campo solo dice que sí (Yes, Si, una casilla marcada), no se acepta."""
     crudo = (l.get("hitch") or "").strip()
     valor = norm(crudo.replace("✔", " YES ").replace("✓", " YES ").replace("✖", " NO "))
     if valor in SIN_HITCH:
@@ -1777,10 +1777,7 @@ def revisar_hitch(l: dict, n: str, link: str) -> Check | None:
     if tipo:
         return Check(GRUPO_LOADS, titulo, "ok", f"Hitch: {crudo} ({tipo}).")
     if valor in GENERICOS_HITCH:
-        for campo, etiqueta in (("notas", "Notes"), ("make", "Make"), ("model", "Model"), ("cargo", "Cargo")):
-            tipo = tipo_hitch(l.get(campo) or "")
-            if tipo:
-                return Check(GRUPO_LOADS, titulo, "ok", f"Hitch: {crudo}. {etiqueta} says {tipo}.")
+        # Sofía (20/10/2026): si el Hitch solo dice que sí, no se acepta, aunque el tipo esté en otro campo
         return Check(GRUPO_LOADS, titulo, "fail", f"Hitch: {crudo}, but the type is not written.",
                      f"Specify the hitch type on {n}: Ball hitch, Pintle hitch, or 5th Wheel hitch.", link, f"Open {n}")
     return Check(GRUPO_LOADS, titulo, "manual", f"Hitch: {crudo}. The app does not recognize this hitch type.",
