@@ -2,4 +2,4 @@ streamlit
 requests
 pandas
 beautifulsoup4
-pypdf
+pypdf>=4.2
