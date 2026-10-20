@@ -49,7 +49,7 @@ La bitácora tiene dos archivos:
 | "Signed SA matches the shipment" en rojo | El detalle dice qué campo no coincide (city, state, ZIP, load, total). El estado vale abreviado o completo. | B-036 |
 | "SA signed again after the Revoke" en rojo o manual | Comparar la fecha del Revoke con la fecha SIGNED del SA (Document History) y con el Stage History de la Orden. | B-035 |
 | "Driver's license" en rojo y la licencia está en los archivos | El nombre del archivo debe tener el primer nombre y un apellido del driver del Driver Assignment (por ejemplo "MIGUEL VELARDE DL …"). El Document Type solo no alcanza. | B-037 |
-| "hitch type" en rojo | El campo Hitch debe decir Ball, Pintle o 5th Wheel (se aceptan variantes como "5fth wheel"). | B-038 |
+| "hitch type" en rojo | El campo Hitch debe decir Ball, Pintle o 5th Wheel (se aceptan variantes como "5fth wheel"). Si solo dice Yes o Si, no se acepta. | B-038 |
 | Drayage frena por BCA o licencia | Revisar que "Drayage" esté en Special Instructions, Truck Type, Truck Description o en el campo Drayage de la load. | B-034 |
 | "Only one Driver Assignment, and it is Dispatched" | Solo un Driver Assignment en Dispatched; los demás en Canceled. Interested no vale. | B-041 |
 | "Previous BCA could not be read" | Normal si el PDF es una imagen escaneada. BackOffice la revisa a mano. | B-014 |
