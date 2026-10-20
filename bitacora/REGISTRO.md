@@ -1,4 +1,4 @@
-[REGISTRO.md](https://github.com/user-attachments/files/33738668/REGISTRO.md)
+[REGISTRO.md](https://github.com/user-attachments/files/33738836/REGISTRO.md)
 # Registro
 
 Historial de versiones y entradas de la bitácora. La guía de uso y el diagnóstico rápido están en el [README](README.md).
@@ -7,6 +7,7 @@ Historial de versiones y entradas de la bitácora. La guía de uso y el diagnós
 
 | Versión | Fecha | Cambios | Entradas |
 |---|---|---|---|
+| 2.7.1 | 2026-10-20 | Hitch: si el campo solo dice que sí (Yes, Si), no se acepta, aunque el tipo esté en Notes, Make, Model o Cargo. | B-038 |
 | 2.7.0 | 2026-10-20 | Ajustes de Sofía probados con Shipments reales (S-040341, S-040418, S-040415, S-040413): Drayage Service con CO-BCA; SA leído campo por campo (estados con nombre completo, fecha de firma, Total Tarriff); SA nuevo después del Revoke sin request; Hitch como "5fth wheel"; archivos reconocidos por el nombre y licencia del driver correcto; código postal de Canadá y dirección más reciente de MOTUS; solo un Driver Assignment en Dispatched (BCA y LC); contenedores sin Make y Model; Contact Roles de clientes particulares; lista completa de Shipments de la Orden. | B-034 a B-045 |
 | 2.6.0 | 2026-10-09 | LC versión 2 con las 82 respuestas de Sofía: Orden y SA firmado, Revoke, Overrides con quién aprueba por franquicia, excepción del dueño de franquicia, montos de todos los Shipments de la Orden, direcciones, loads repetidas, COI por tipo de camión y vigencia, licencia, varios Driver Assignments, driver de la app. **Solo lo verde recibe código**; amarillo y rojo frenan. Lo que BackOffice revisa a mano solo lo ve BackOffice (en Validate code). Anexo editable `anexo.json`. Borrador de la política de LC en inglés para Sofía. | B-027 a B-033 |
 | 2.5.0 | 2026-10-08 | Nueva pestaña **Verify LC**: pre-verificación de Load Confirmation con Shipment Info, Special Instructions, Loads, pago (y plantilla de LC), truck, Driver Assignment, Carrier, MOTUS, BCA, COI, licencia y driver de la app. Lo de la Orden y el SA queda como revisión manual. Códigos `LC-` y estadísticas por documento. | B-024, B-025, B-026 |
@@ -92,7 +93,8 @@ Historial de versiones y entradas de la bitácora. La guía de uso y el diagnós
 - **Estado:** Resuelto
 - **Versión:** 2.7.0
 - **Síntoma:** S-040415 pedía especificar el Hitch y el campo decía "5fth wheel".
-- **Solución:** `tipo_hitch` reconoce Ball, Pintle o Pintel, y 5th Wheel en sus variantes (5fth, fifth, 5 th, whl), con o sin la palabra hitch. Si el campo solo dice que sí, busca el tipo en Notes, Make, Model o Cargo. Un tipo que la app no conoce (por ejemplo Gooseneck) va a revisión manual.
+- **Solución:** `tipo_hitch` reconoce Ball, Pintle o Pintel, y 5th Wheel en sus variantes (5fth, fifth, 5 th, whl), con o sin la palabra hitch (confirmado por Sofía el 2026-10-20). Un tipo que la app no conoce (por ejemplo Gooseneck) va a revisión manual.
+- **Corrección 2.7.1 (Sofía, 2026-10-20):** Si el campo Hitch solo dice que sí (Yes, Si o una casilla marcada), no se acepta: frena aunque el tipo esté escrito en Notes, Make, Model o Cargo. En 2.7.0 la app lo buscaba en esos campos; se quitó.
 
 ### B-037 · BCA, COI y licencia se reconocen por el nombre del archivo
 - **Fecha:** 2026-10-20
