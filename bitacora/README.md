@@ -45,6 +45,13 @@ La bitácora tiene dos archivos:
 | LC: "Could not finish the check … the order could not be read" | Abrir la Orden del Shipment en el CRM. Si abre, guardarla con Ctrl+S y revisar `parse_order`. | B-028 |
 | LC: el dueño de franquicia no recibe la excepción | Debe estar en `duenos` de su franquicia en `anexo.json`, y el Shipment no debe tener Dispatcher Id (o debe escribir su nombre en "Requested by"). | B-031, B-033 |
 | Validate code no muestra "BackOffice reviews manually" | Correr la versión 2.6.0 de `supabase.sql` (columnas `revision_manual` y `excepciones`). | B-030 |
+| "Address matches Principal Place of Business" en rojo y se ve igual | Leer "Difference": dice qué palabra está solo en el CRM o solo en MOTUS. Direcciones de Canadá llevan el código postal completo (T6M 1R7). Si MOTUS tiene varias direcciones, la app usa la principal más reciente. | B-039 |
+| "Signed SA matches the shipment" en rojo | El detalle dice qué campo no coincide (city, state, ZIP, load, total). El estado vale abreviado o completo. | B-036 |
+| "SA signed again after the Revoke" en rojo o manual | Comparar la fecha del Revoke con la fecha SIGNED del SA (Document History) y con el Stage History de la Orden. | B-035 |
+| "Driver's license" en rojo y la licencia está en los archivos | El nombre del archivo debe tener el primer nombre y un apellido del driver del Driver Assignment (por ejemplo "MIGUEL VELARDE DL …"). El Document Type solo no alcanza. | B-037 |
+| "hitch type" en rojo | El campo Hitch debe decir Ball, Pintle o 5th Wheel (se aceptan variantes como "5fth wheel"). | B-038 |
+| Drayage frena por BCA o licencia | Revisar que "Drayage" esté en Special Instructions, Truck Type, Truck Description o en el campo Drayage de la load. | B-034 |
+| "Only one Driver Assignment, and it is Dispatched" | Solo un Driver Assignment en Dispatched; los demás en Canceled. Interested no vale. | B-041 |
 | "Previous BCA could not be read" | Normal si el PDF es una imagen escaneada. BackOffice la revisa a mano. | B-014 |
 | "Validate code" dice "The code log is not set up" | Secrets `SUPABASE_URL` y `SUPABASE_KEY`, y que la tabla exista (`supabase.sql`). | B-009 |
 | "The verification could not be saved to the log" | Que la key sea la **service_role** y que se haya corrido la versión más reciente de `supabase.sql` (la 2.2.0 agregó columnas). | B-009, B-016 |
@@ -68,7 +75,9 @@ La bitácora tiene dos archivos:
 | Reglas de la LC | Procedimiento de BackOffice y respuestas de Sofía (ver B-027) | `stt_core.evaluar_lc` |
 | Orden: etapa, montos, direcciones, Special Terms, Sign Documents, Contact Roles | `/Admin/Orders/Details/<id>` | `stt_core.parse_order` |
 | Documents de la Orden | POST `/Admin/LogisticsQuote/OrderDocumentList?LogisticQuoteId=<id>` | `stt_core.CRM.documentos_orden` |
-| Todos los Shipments de la Orden | `/Admin/Order/ViewAllOrder?orderId=<quoteId>` | `stt_core.CRM.ids_shipments_orden` |
+| Todos los Shipments de la Orden | `GET /Admin/Order/OrderList?opportunityId=<quoteId>` (JSON que usa la página View All) | `stt_core.CRM.ids_shipments_orden` |
+| Documents del Shipment (BOL, Invoice, CO-BCA) | POST `/Admin/Order/OrderDocumentList?OrderId=<shipmentId>` | `stt_core.CRM.documentos_shipment` |
+| Campos del SA firmado y fecha de firma | PDF de Sign Documents de la Orden | `stt_core.parse_sa` |
 | Detalle de un Override (Comment, Response, Last Modified By) | `/Admin/Request/Details/<id>` | `stt_core.parse_request_detail` |
 | Dueños, aprobadores, contactos, Naviera y coberturas por camión | `anexo.json` (lo mantiene Sofía) | `stt_core.Anexo` |
 | Archivos del Carrier (BCAs previas) | POST `/Admin/CarrierManagement/CarrierManagementPictureList?DriverId=<id>` | `stt_core.CRM.archivos_carrier` |
