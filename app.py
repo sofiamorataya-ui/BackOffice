@@ -18,7 +18,7 @@ import streamlit as st
 import stt_core as core
 
 RAIZ = Path(__file__).parent
-VERSION = "2.6.0"  # Cambiala en cada entrega y anotala en bitacora/REGISTRO.md
+VERSION = "2.7.0"  # Cambiala en cada entrega y anotala en bitacora/REGISTRO.md
 ZONA = ZoneInfo("America/Guatemala")
 
 st.set_page_config(page_title="STT BackOffice", page_icon=str(RAIZ / "assets" / "stt_icon.png"),
@@ -402,7 +402,11 @@ def html_veredicto(r, codigo: str | None, cuando: str) -> str:
         if r.manuales:
             sub += " BackOffice completes its final review when your request arrives."
     elif r.veredicto == "YA_EXISTE":
-        if r.terminos_app:
+        if getattr(r, "drayage", False):
+            cls, titulo = "stop", "Do not send: Drayage Service"
+            sub = ("This shipment is a Drayage Service, which does not need a BCA. The Load Confirmation needs a "
+                   "CO-Broker Carrier Agreement (CO-BCA) instead.")
+        elif r.terminos_app:
             cls, titulo = "stop", "Do not send: signed in app"
             sub = (f"{e(r.terminos_app['nombre'])} already accepted the terms in the STT app (Terms Status: True), "
                    "which counts as a signed BCA. No new request is needed.")
